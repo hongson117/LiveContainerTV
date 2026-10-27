@@ -133,6 +133,9 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
 @property UICollectionView *cv;
 @property NSArray<LCTVTile *> *tiles;
 @property UILabel *certChip, *urlChip, *busyChip, *banner, *empty;
+@property UIButton *refreshBtn, *diagBtn;
+@property UIFocusGuide *upGuide;
+@property BOOL focusHeader;
 @end
 
 @implementation LCTVHomeController
@@ -171,6 +174,7 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     [refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
     UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[refresh, diag]];
     btns.spacing = 24;
+    _refreshBtn = refresh; _diagBtn = diag;
 
     UIStackView *right = [[UIStackView alloc] initWithArrangedSubviews:@[chips, btns]];
     right.axis = UILayoutConstraintAxisVertical; right.alignment = UIStackViewAlignmentTrailing; right.spacing = 18;
@@ -216,12 +220,43 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
         [_empty.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-40],
         [_empty.centerXAnchor constraintEqualToAnchor:g.centerXAnchor],
     ]];
+    // Focus bridge: tiles sit under the non-focusable logo; pressing Up from any tile must reach the header buttons.
+    _upGuide = [UIFocusGuide new];
+    [self.view addLayoutGuide:_upGuide];
+    [NSLayoutConstraint activateConstraints:@[
+        [_upGuide.leadingAnchor constraintEqualToAnchor:g.leadingAnchor],
+        [_upGuide.trailingAnchor constraintEqualToAnchor:btns.leadingAnchor constant:-8],
+        [_upGuide.topAnchor constraintEqualToAnchor:header.topAnchor],
+        [_upGuide.bottomAnchor constraintEqualToAnchor:_cv.topAnchor constant:-2],
+    ]];
+    _upGuide.preferredFocusEnvironments = @[refresh];
+    // Down from the header buttons always lands in the grid.
+    UIFocusGuide *down = [UIFocusGuide new];
+    [self.view addLayoutGuide:down];
+    [NSLayoutConstraint activateConstraints:@[
+        [down.leadingAnchor constraintEqualToAnchor:btns.leadingAnchor],
+        [down.trailingAnchor constraintEqualToAnchor:btns.trailingAnchor],
+        [down.topAnchor constraintEqualToAnchor:btns.bottomAnchor constant:2],
+        [down.bottomAnchor constraintEqualToAnchor:_cv.topAnchor constant:-2],
+    ]];
+    down.preferredFocusEnvironments = @[_cv];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:LCTVStateChangedNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
     [self reload];
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"LCTVFocusTest"]) { // CI: prove header buttons take focus
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            self.focusHeader = YES; [self setNeedsFocusUpdate]; [self updateFocusIfNeeded];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                NSLog(@"[LCTV] FOCUSTEST refreshFocused=%d diagFocused=%d", self.refreshBtn.focused, self.diagBtn.focused);
+            });
+        });
+    }
 }
 
-- (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments { return @[_cv]; }
+- (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments {
+    if (_focusHeader) { _focusHeader = NO; return @[_diagBtn]; }
+    return [_cv numberOfItemsInSection:0] ? @[_cv] : @[_refreshBtn];
+}
 
 - (void)refreshTapped { [LCTVCert.shared evaluateAndResignAsync:NO]; [self reload]; }
 - (void)openDiag { [self.navigationController pushViewController:[LCTVDiagController new] animated:YES]; }

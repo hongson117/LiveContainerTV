@@ -81,6 +81,11 @@ jobs:
           sleep 12
           mkdir -p shots
           xcrun simctl io "$DEV" screenshot shots/home.png
+          xcrun simctl terminate "$DEV" com.hongson117.livecontainertv || true
+          xcrun simctl launch --console-pty "$DEV" com.hongson117.livecontainertv -LCTVScreenshotDemo YES -LCTVFocusTest YES > shots/focus.log 2>&1 &
+          sleep 10
+          xcrun simctl io "$DEV" screenshot shots/focus_diag.png
+          grep FOCUSTEST shots/focus.log || true
           ls -l shots
 
       - uses: actions/upload-artifact@v4
