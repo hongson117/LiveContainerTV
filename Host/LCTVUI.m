@@ -121,6 +121,9 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
                       LCTVHTTPServer.shared.lanURL ?: @"?", c.summary, c.hostFingerprint ?: @"(no embedded.mobileprovision)",
                       c.p12Fingerprint ?: @"-", c.teamName ?: @"-", LCTVDataDir(), LCTVDataDirKind];
     head = [head stringByAppendingFormat:@"Last guest boot timings:\n%@\n\n", [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastBootTimings"] ?: @"(none yet)"];
+    NSString *crash = [NSString stringWithContentsOfFile:[LCTVCachesDir() stringByAppendingPathComponent:@"lctv_last_crash.txt"] encoding:NSUTF8StringEncoding error:nil];
+    if ([crash containsString:@"==="]) head = [head stringByAppendingFormat:@"LAST GUEST CRASH:\n%@\n\n", crash];
+    else if (crash.length) head = [head stringByAppendingFormat:@"Last guest run: no crash captured (%@)\n\n", [crash stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]];
     _tv.text = [head stringByAppendingString:LCTVReadLogTail(20000)];
     [_tv scrollRangeToVisible:NSMakeRange(_tv.text.length, 0)];
 }

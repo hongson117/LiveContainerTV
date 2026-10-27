@@ -87,6 +87,7 @@ BOOL LCTVPatchExecToDylib(NSString *path, NSError **error) {
 
 #pragma mark - Load path fixups (rpath / @executable_path)
 
+static NSMutableArray *gPendingRpaths; // rpaths that didn't fit in place -> appended as new LC_RPATH
 static BOOL rewriteStr(uint8_t *cmdBase, uint32_t cmdsize, uint32_t strOff, NSString *from, NSString *to, NSString *tag) {
     char *s = (char *)cmdBase + strOff;
     size_t cap = cmdsize - strOff;
@@ -94,7 +95,11 @@ static BOOL rewriteStr(uint8_t *cmdBase, uint32_t cmdsize, uint32_t strOff, NSSt
     if (![cur hasPrefix:from]) return NO;
     NSString *nw = [to stringByAppendingString:[cur substringFromIndex:from.length]];
     const char *n = nw.UTF8String; size_t nl = strlen(n) + 1;
-    if (nl > cap) { LCTVLog(@"fixup: no room %@ '%@' -> '%@'", tag, cur, nw); return NO; }
+    if (nl > cap) {
+        if ([tag isEqual:@"rpath"]) { [gPendingRpaths addObject:nw]; LCTVLog(@"fixup: rpath '%@' too long in place -> will append '%@'", cur, nw); }
+        else LCTVLog(@"fixup: no room %@ '%@' -> '%@' (covered by framework preload)", tag, cur, nw);
+        return NO;
+    }
     memset(s, 0, cap); memcpy(s, n, nl);
     LCTVLog(@"fixup: %@ '%@' -> '%@'", tag, cur, nw);
     return YES;
@@ -110,6 +115,7 @@ BOOL LCTVFixGuestLoadPaths(NSString *path, NSString *relToAppRoot, BOOL addLoade
     NSString *exeRepl = relToAppRoot.length ? [@"@loader_path/" stringByAppendingString:relToAppRoot] : @"@loader_path";
     uint8_t *p = bytes + sizeof(*hdr);
     uint32_t firstSect = UINT32_MAX; BOOL hasLoaderFw = NO; BOOL changed = NO;
+    gPendingRpaths = [NSMutableArray new];
     for (uint32_t i = 0; i < hdr->ncmds; i++) {
         struct load_command *lc = (void *)p;
         if (lc->cmd == LC_RPATH) {
@@ -129,8 +135,10 @@ BOOL LCTVFixGuestLoadPaths(NSString *path, NSString *relToAppRoot, BOOL addLoade
         }
         p += lc->cmdsize;
     }
-    if (addLoaderRpath && !hasLoaderFw) {
-        const char *rp = "@loader_path/Frameworks";
+    NSMutableArray *toAdd = [gPendingRpaths mutableCopy];
+    if (addLoaderRpath && !hasLoaderFw) [toAdd addObject:@"@loader_path/Frameworks"];
+    for (NSString *rpS in toAdd) {
+        const char *rp = rpS.UTF8String;
         uint32_t sz = rnd8((uint32_t)sizeof(struct rpath_command) + (uint32_t)strlen(rp) + 1);
         uint32_t end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
         uint32_t freeSp = (firstSect == UINT32_MAX ? end : firstSect) - end;
@@ -140,9 +148,9 @@ BOOL LCTVFixGuestLoadPaths(NSString *path, NSString *relToAppRoot, BOOL addLoade
             rc->cmd = LC_RPATH; rc->cmdsize = sz; rc->path.offset = sizeof(struct rpath_command);
             strcpy((char *)rc + sizeof(struct rpath_command), rp);
             hdr->ncmds++; hdr->sizeofcmds += sz; changed = YES;
-            LCTVLog(@"fixup: added LC_RPATH @loader_path/Frameworks to %@", path.lastPathComponent);
+            LCTVLog(@"fixup: added LC_RPATH %s to %@", rp, path.lastPathComponent);
         } else {
-            LCTVLog(@"fixup: WARNING no header space for LC_RPATH (free=%u) in %@", freeSp, path.lastPathComponent);
+            LCTVLog(@"fixup: no header space for LC_RPATH %s (free=%u) in %@ — relying on framework preload", rp, freeSp, path.lastPathComponent);
         }
     }
     if (changed && ![data writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
