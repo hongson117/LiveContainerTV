@@ -21,15 +21,13 @@ jobs:
 
       - name: Build
         run: |
-          set -ex
+          set -exo pipefail
           for t in LiveContainerTV GuestDemo; do
             xcodebuild build -project LiveContainerTV.xcodeproj -target "$t" -sdk appletvos -configuration Release \
-              CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" SYMROOT=$PWD/build \
-              | xcpretty || true
-            # xcpretty may hide status; re-run without pipe on failure detection:
+              CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" SYMROOT=$PWD/build 2>&1 | tee "build-$t.log" | grep -E "error:|warning: .*LCTV|BUILD (SUCCEEDED|FAILED)" || true
+            grep -q "BUILD SUCCEEDED" "build-$t.log" || { grep -B2 -A5 "error:" "build-$t.log" | head -80; exit 1; }
           done
-          # Ensure products exist
-          test -d build/Release-appletvos/LiveContainerTV.app
+          test -f build/Release-appletvos/LiveContainerTV.app/Info.plist
           test -d build/Release-appletvos/GuestDemo.app
 
       - name: Package
@@ -56,6 +54,15 @@ jobs:
           cp -R "$APP" out/Payload/
           (cd out && zip -qry LiveContainerTV.ipa Payload)
           ls -lh out/LiveContainerTV.ipa
+
+      - name: Verify IPA contents
+        run: |
+          set -eo pipefail
+          L=$(unzip -l out/LiveContainerTV.ipa)
+          for f in Payload/LiveContainerTV.app/Info.plist Payload/LiveContainerTV.app/LiveContainerTV Payload/LiveContainerTV.app/Assets.car Payload/LiveContainerTV.app/Frameworks/GuestDemo.framework/GuestDemo Payload/LiveContainerTV.app/Frameworks/GuestDemo.framework/Info.plist; do
+            echo "$L" | grep -q " $f\$" || { echo "MISSING $f"; exit 1; }
+            echo "OK $f"
+          done
 
       - uses: actions/upload-artifact@v4
         with:

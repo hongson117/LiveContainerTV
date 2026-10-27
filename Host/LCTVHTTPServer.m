@@ -1,6 +1,7 @@
 #import "LCTVHTTPServer.h"
 #import "LCTVCommon.h"
 #import "LCTVAppManager.h"
+#import "zsigner.h"
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
@@ -411,8 +412,7 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
             NSString *validateNote = @"";
             if (ok) {
                 @try {
-                    Class ZSigner = NSClassFromString(@"ZSigner");
-                    if (ZSigner && [ZSigner respondsToSelector:@selector(getTeamIdWithCert:pass:)]) {
+                    {
                         NSString *team = [ZSigner getTeamIdWithCert:file pass:pass];
                         validateNote = team.length
                             ? [NSString stringWithFormat:@" Team ID: %@.", team]
