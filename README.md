@@ -3,12 +3,11 @@
 tvOS port of the [LiveContainer](https://github.com/LiveContainer/LiveContainer) idea: run other tvOS apps inside one signed host so you only re-sign one app every 7 days (free Apple Developer account).
 
 ## Features (PoC)
-- Built-in **GuestDemo** (proves in-process launch works)
 - **HTTP import server on port 8228** — upload `.ipa` + signing `.p12` from your PC
 - On-device Mach-O patch (`MH_EXECUTE` → `MH_DYLIB`) + **ZSign** re-sign with your cert
 - Robust multipart upload (Expect: 100-continue, stream large IPAs to disk, HTML errors)
 - Pending guest launch is single-shot and time-limited — crash/relaunch always returns to the host list
-- GuestDemo: **Menu** or **Return to host** goes back to the host list
+- Guest apps: **Menu** goes back to the host list
 
 ## Get your .p12 (Windows / atvloadly / plumesign)
 
@@ -33,8 +32,7 @@ Certificates live under `%APPDATA%\PlumeImpactor\` (private key in `keys\<team_i
 
 ## Guest launch / return to host
 - Pending launch is written only when you confirm OK, and cleared the moment it is read.
-- If the app crashes or you reopen later than ~90s, you get the **host list** (not a stuck GuestDemo).
-- From GuestDemo: press **Menu** on the remote, or the **Return to LiveContainerTV host** button, then reopen the app.
+- If the app crashes or you reopen later than ~90s, you get the **host list**.
 
 ## Build
 GitHub Actions (macos-15) fetches [krzyzanowskim/OpenSSL](https://github.com/krzyzanowskim/OpenSSL) (tvOS slice) and produces an unsigned IPA artifact.

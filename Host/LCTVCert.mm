@@ -7,6 +7,10 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
+#include <openssl/pkcs7.h>
+#include <mach-o/loader.h>
+#include <mach-o/fat.h>
+#include <libkern/OSByteOrder.h>
 
 static NSString *sha1hex(NSData *d) {
     unsigned char md[CC_SHA1_DIGEST_LENGTH]; CC_SHA1(d.bytes, (CC_LONG)d.length, md);
@@ -176,3 +180,65 @@ static NSData *derOf(X509 *x) {
     });
 }
 @end
+
+
+// ---- Read signer cert fingerprint straight from a Mach-O's CMS code signature ----
+static NSString *fpFromSlice(const uint8_t *b, size_t len) {
+    if (len < sizeof(struct mach_header_64)) return nil;
+    const struct mach_header_64 *h = (const struct mach_header_64 *)b;
+    if (h->magic != MH_MAGIC_64) return nil;
+    size_t off = sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < h->ncmds && off + sizeof(struct load_command) <= len; i++) {
+        const struct load_command *lc = (const struct load_command *)(b + off);
+        if (lc->cmd == LC_CODE_SIGNATURE) {
+            const struct linkedit_data_command *cs = (const struct linkedit_data_command *)lc;
+            if ((size_t)cs->dataoff + cs->datasize > len || cs->datasize < 12) return nil;
+            const uint8_t *sb = b + cs->dataoff;
+            if (OSReadBigInt32(sb, 0) != 0xfade0cc0) return nil;
+            uint32_t count = OSReadBigInt32(sb, 8);
+            for (uint32_t k = 0; k < count && 12 + k*8 + 8 <= cs->datasize; k++) {
+                uint32_t type = OSReadBigInt32(sb, 12 + k*8), boff = OSReadBigInt32(sb, 16 + k*8);
+                if (type != 0x10000 || boff + 8 > cs->datasize) continue;
+                const uint8_t *blob = sb + boff;
+                if (OSReadBigInt32(blob, 0) != 0xfade0b01) continue;
+                uint32_t blen = OSReadBigInt32(blob, 4);
+                if (blen <= 8 || boff + blen > cs->datasize) continue;
+                const unsigned char *p = blob + 8;
+                PKCS7 *p7 = d2i_PKCS7(NULL, &p, blen - 8);
+                if (!p7) return nil;
+                NSString *res = nil;
+                STACK_OF(X509) *certs = PKCS7_type_is_signed(p7) ? p7->d.sign->cert : NULL;
+                for (int c = 0; certs && c < sk_X509_num(certs); c++) {
+                    X509 *x = sk_X509_value(certs, c);
+                    if (X509_check_ca(x) != 0) continue; // skip WWDR / root
+                    unsigned char *der = NULL; int dl = i2d_X509(x, &der);
+                    if (dl > 0) res = sha1hex([NSData dataWithBytes:der length:dl]);
+                    OPENSSL_free(der); break;
+                }
+                PKCS7_free(p7);
+                return res;
+            }
+            return nil;
+        }
+        off += lc->cmdsize;
+    }
+    return nil;
+}
+
+NSString *LCTVSignerFingerprint(NSString *execPath) {
+    NSData *d = [NSData dataWithContentsOfFile:execPath options:NSDataReadingMappedIfSafe error:nil];
+    if (d.length < 8) return nil;
+    const uint8_t *b = (const uint8_t *)d.bytes;
+    uint32_t magic = OSReadBigInt32(b, 0);
+    if (magic == FAT_MAGIC) {
+        uint32_t n = OSReadBigInt32(b, 4);
+        for (uint32_t i = 0; i < n && 8 + (i+1)*sizeof(struct fat_arch) <= d.length; i++) {
+            const uint8_t *fa = b + 8 + i*sizeof(struct fat_arch);
+            uint32_t o = OSReadBigInt32(fa, 8), sz = OSReadBigInt32(fa, 12);
+            if ((size_t)o + sz > d.length) continue;
+            NSString *r = fpFromSlice(b + o, sz); if (r) return r;
+        }
+        return nil;
+    }
+    return fpFromSlice(b, d.length);
+}

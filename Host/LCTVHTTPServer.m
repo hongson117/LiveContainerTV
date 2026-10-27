@@ -413,7 +413,7 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
                 [apps addObject:@{@"name": a.name ?: @"", @"bundleId": a.bundleId ?: @"", @"patched": @(a.patched), @"signed": @(a.signedOK), @"purged": @(a.purged), @"signedFingerprint": a.signedFingerprint ?: @""}];
             }
             NSDictionary *st = @{@"port": @(kPort), @"url": self.lanURL ?: @"", @"cert": @(LCTVAppManager.shared.hasCertificate), @"certState": @(LCTVCert.shared.state), @"certSummary": LCTVCert.shared.summary,
-                                 @"hostFingerprint": LCTVCert.shared.hostFingerprint ?: @"", @"p12Fingerprint": LCTVCert.shared.p12Fingerprint ?: @"", @"apps": apps};
+                                 @"hostFingerprint": LCTVCert.shared.hostFingerprint ?: @"", @"p12Fingerprint": LCTVCert.shared.p12Fingerprint ?: @"", @"dataDir": LCTVDataDir(), @"dataDirKind": LCTVDataDirKind, @"apps": apps};
             NSData *json = [NSJSONSerialization dataWithJSONObject:st options:NSJSONWritingPrettyPrinted error:nil] ?: [NSData data];
             [self sendResponse:fd status:200 contentType:@"application/json" body:json];
             return;

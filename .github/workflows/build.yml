@@ -22,33 +22,22 @@ jobs:
       - name: Build
         run: |
           set -exo pipefail
-          for t in LiveContainerTV GuestDemo; do
+          for t in LiveContainerTV; do
             xcodebuild build -project LiveContainerTV.xcodeproj -target "$t" -sdk appletvos -configuration Release \
               CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" SYMROOT=$PWD/build 2>&1 | tee "build-$t.log" | grep -E "error:|warning: .*LCTV|BUILD (SUCCEEDED|FAILED)" || true
             grep -q "BUILD SUCCEEDED" "build-$t.log" || { grep -B2 -A5 "error:" "build-$t.log" | head -80; exit 1; }
           done
           test -f build/Release-appletvos/LiveContainerTV.app/Info.plist
-          test -d build/Release-appletvos/GuestDemo.app
 
       - name: Package
         run: |
           set -ex
           APP=build/Release-appletvos/LiveContainerTV.app
-          G=build/Release-appletvos/GuestDemo.app
-          FW=$APP/Frameworks/GuestDemo.framework
-          mkdir -p "$FW"
-          cp -R "$G"/* "$FW"/
-          rm -rf "$FW/_CodeSignature"
-          plutil -replace CFBundlePackageType -string FMWK "$FW/Info.plist"
-          plutil -replace LCTVGuest -bool YES "$FW/Info.plist"
           # Also embed OpenSSL.framework if xcode didn't
           if [ ! -d "$APP/Frameworks/OpenSSL.framework" ] && [ -d OpenSSL/Frameworks/OpenSSL.xcframework/tvos-arm64/OpenSSL.framework ]; then
             mkdir -p "$APP/Frameworks"
             cp -R OpenSSL/Frameworks/OpenSSL.xcframework/tvos-arm64/OpenSSL.framework "$APP/Frameworks/"
           fi
-          lipo -info "$FW/GuestDemo" || true
-          python3 tools/patch_macho.py "$FW/GuestDemo"
-          otool -hv "$FW/GuestDemo" | head -5
           mkdir -p out/Payload
           rm -rf out/Payload/*
           cp -R "$APP" out/Payload/
@@ -59,10 +48,11 @@ jobs:
         run: |
           set -eo pipefail
           L=$(unzip -l out/LiveContainerTV.ipa)
-          for f in Payload/LiveContainerTV.app/Info.plist Payload/LiveContainerTV.app/LiveContainerTV Payload/LiveContainerTV.app/Assets.car Payload/LiveContainerTV.app/Frameworks/GuestDemo.framework/GuestDemo Payload/LiveContainerTV.app/Frameworks/GuestDemo.framework/Info.plist; do
+          for f in Payload/LiveContainerTV.app/Info.plist Payload/LiveContainerTV.app/LiveContainerTV Payload/LiveContainerTV.app/Assets.car Payload/LiveContainerTV.app/lctv_logo.png Payload/LiveContainerTV.app/Frameworks/OpenSSL.framework/OpenSSL; do
             echo "$L" | grep -q " $f\$" || { echo "MISSING $f"; exit 1; }
             echo "OK $f"
           done
+          if echo "$L" | grep -qi guestdemo; then echo "GuestDemo must not be in IPA"; exit 1; fi; echo "OK no GuestDemo"
 
       - name: Verify logo + layers
         run: |

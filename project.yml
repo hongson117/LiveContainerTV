@@ -51,19 +51,3 @@ targets:
         NSLocalNetworkUsageDescription: "LiveContainerTV runs a local web server so you can upload IPAs from your computer."
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-  GuestDemo:
-    type: application
-    platform: tvOS
-    sources:
-      - Guest
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.guestdemo
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: GuestDemo
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-    info:
-      path: Guest/Info.plist
-      properties:
-        CFBundleDisplayName: GuestDemo
-        UILaunchScreen: {}

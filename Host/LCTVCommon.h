@@ -14,6 +14,9 @@ NSString *LCTVPendingPath(void);
 NSString *LCTVCertPath(void);
 NSString *LCTVDataDir(void);
 NSString *LCTVIconsDir(void);
+extern NSString *LCTVDataDirKind;
+/// SHA1 (hex, upper) of leaf cert in the Mach-O CMS code signature, nil if unsigned / ad-hoc.
+NSString *LCTVSignerFingerprint(NSString *execPath);
 extern NSString *const LCTVStateChangedNotification;
 NSString *LCTVCertPassPath(void);
 NSString *LCTVReadLogTail(NSUInteger maxLen);

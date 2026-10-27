@@ -20,6 +20,14 @@ static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
 
 + (instancetype)shared { static LCTVAppManager *s; static dispatch_once_t o; dispatch_once(&o,^{ s=[self new]; }); return s; }
 
+- (void)registerAppIfNeeded:(LCTVImportedApp *)a {
+    NSDictionary *reg = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry];
+    if (reg[a.bundleId]) return;
+    NSMutableDictionary *m = [reg mutableCopy] ?: [NSMutableDictionary new];
+    m[a.bundleId] = @{@"name": a.name ?: a.bundleId, @"version": a.version ?: @""};
+    [[NSUserDefaults standardUserDefaults] setObject:m forKey:kRegistry];
+}
+
 - (NSArray<LCTVImportedApp *> *)importedApps {
     NSMutableArray *out = [NSMutableArray new];
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -42,6 +50,18 @@ static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
             a.signedDate = [[NSUserDefaults standardUserDefaults] stringForKey:[@"signedAt." stringByAppendingString:a.bundleId]];
             a.version = info[@"CFBundleShortVersionString"];
             if (![fm fileExistsAtPath:a.execPath]) a.purged = YES;
+            else {
+                // Trust the real signature over metadata (handles apps signed by older builds / migrated)
+                NSString *fp = LCTVSignerFingerprint(a.execPath);
+                if (fp) {
+                    if (![fp isEqual:a.signedFingerprint]) {
+                        a.signedFingerprint = fp;
+                        [[NSUserDefaults standardUserDefaults] setObject:fp forKey:[@"signedFP." stringByAppendingString:a.bundleId]];
+                    }
+                    if (!a.signedOK) { a.signedOK = YES; [[NSUserDefaults standardUserDefaults] setBool:YES forKey:[@"signed." stringByAppendingString:a.bundleId]]; }
+                }
+                [self registerAppIfNeeded:a];
+            }
             [out addObject:a];
         }
     }
@@ -65,6 +85,7 @@ static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
     return [[NSString stringWithContentsOfFile:LCTVCertPassPath() encoding:NSUTF8StringEncoding error:nil] ?: @"" stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
 }
 - (BOOL)saveCertificateData:(NSData *)p12 password:(NSString *)password error:(NSError **)error {
+    [NSFileManager.defaultManager createDirectoryAtPath:LCTVCertPath().stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
     if (![p12 writeToFile:LCTVCertPath() options:NSDataWritingAtomic error:error]) return NO;
     [(password ?: @"") writeToFile:LCTVCertPassPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     LCTVLog(@"saved cert.p12 (%lu bytes) passLen=%lu", (unsigned long)p12.length, (unsigned long)(password ?: @"").length);

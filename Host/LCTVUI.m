@@ -116,9 +116,9 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
 }
 - (void)reload {
     LCTVCert *c = LCTVCert.shared;
-    NSString *head = [NSString stringWithFormat:@"Web: %@\n%@\nHost cert SHA1: %@\np12 cert SHA1:  %@\nTeam: %@\n\n",
+    NSString *head = [NSString stringWithFormat:@"Web: %@\n%@\nHost cert SHA1: %@\np12 cert SHA1:  %@\nTeam: %@\nData dir: %@ (%@)\n\n",
                       LCTVHTTPServer.shared.lanURL ?: @"?", c.summary, c.hostFingerprint ?: @"(no embedded.mobileprovision)",
-                      c.p12Fingerprint ?: @"-", c.teamName ?: @"-"];
+                      c.p12Fingerprint ?: @"-", c.teamName ?: @"-", LCTVDataDir(), LCTVDataDirKind];
     _tv.text = [head stringByAppendingString:LCTVReadLogTail(20000)];
     [_tv scrollRangeToVisible:NSMakeRange(_tv.text.length, 0)];
 }
@@ -236,16 +236,6 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
         if (a.purged) { x.subtitle = @"Re-import"; x.dim = YES; }
         else if (!a.signedOK) x.subtitle = @"Not signed";
         else if (LCTVCert.shared.p12Fingerprint && a.signedFingerprint && ![a.signedFingerprint isEqual:LCTVCert.shared.p12Fingerprint]) x.subtitle = @"Re-sign";
-        [t addObject:x];
-    }
-    NSString *dir = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks"];
-    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
-        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/%@/Info.plist", dir, f]];
-        if (![info[@"LCTVGuest"] boolValue]) continue;
-        LCTVTile *x = [LCTVTile new];
-        NSString *n = f.stringByDeletingPathExtension;
-        x.token = [@"builtin:" stringByAppendingString:n]; x.title = info[@"CFBundleDisplayName"] ?: n; x.subtitle = @"Demo";
-        x.icon = [LCTVAppManager letterTileFor:x.title size:CGSizeMake(400, 240)];
         [t addObject:x];
     }
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"LCTVScreenshotDemo"]) { // CI screenshot only
