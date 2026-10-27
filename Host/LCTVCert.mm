@@ -8,6 +8,7 @@
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/pkcs7.h>
+#include <openssl/x509v3.h>
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
 #include <libkern/OSByteOrder.h>
