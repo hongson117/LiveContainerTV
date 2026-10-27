@@ -50,6 +50,12 @@ Thông tin kỹ thuật (fingerprint, thời gian khởi động, log): nút **D
 
 ---
 
+## Ủng hộ
+
+Nếu LiveContainerTV hữu ích, bạn có thể ủng hộ tác giả qua MoMo / chuyển khoản VietQR. Cảm ơn bạn! (Trong app: nút **Ủng hộ / Support** trên màn hình chính.)
+
+<img src="docs/donate_qr.png" width="320" alt="MoMo / VietQR – NGUYEN HONG SON">
+
 ## English
 LiveContainerTV lets you run **several tvOS apps inside one sideloaded app** using a **free Apple ID**. Install it once with atvloadly, then add tvOS .ipa files from a browser.
 
@@ -74,3 +80,9 @@ LiveContainerTV lets you run **several tvOS apps inside one sideloaded app** usi
 | Icon | Top Shelf |
 |---|---|
 | ![](docs/icon_large.png) | ![](docs/topshelf.png) |
+
+## Donate
+
+If LiveContainerTV is useful to you, you can support the author via MoMo / VietQR bank transfer. Thank you! (In the app: the **Ủng hộ / Support** button on the home screen.)
+
+<img src="docs/donate_qr.png" width="320" alt="MoMo / VietQR – NGUYEN HONG SON">

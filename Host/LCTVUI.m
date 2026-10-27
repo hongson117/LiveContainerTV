@@ -187,6 +187,42 @@ static UIImage *qrImage(NSString *str, CGFloat side) {
     UIImage *img = [UIImage imageWithCGImage:cg]; CGImageRelease(cg);
     return img;
 }
+@interface LCTVDonateController : UIViewController
+@end
+@implementation LCTVDonateController { UIButton *_back; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Ủng hộ / Support";
+    self.view.backgroundColor = rgb(10, 14, 32);
+    UIImageView *qr = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"lctv_donate.png"]];
+    qr.contentMode = UIViewContentModeScaleAspectFit; qr.layer.cornerRadius = 24; qr.layer.masksToBounds = YES;
+    qr.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *t = [UILabel new]; t.numberOfLines = 0; t.textColor = UIColor.whiteColor;
+    t.font = [UIFont systemFontOfSize:38 weight:UIFontWeightSemibold];
+    t.text = @"Nếu LiveContainerTV hữu ích, bạn có thể ủng hộ tác giả qua MoMo / chuyển khoản VietQR. Cảm ơn bạn!\n\nIf LiveContainerTV is useful to you, you can support the author via MoMo / VietQR bank transfer. Thank you!\n\nQuét mã bằng app ngân hàng hoặc MoMo trên điện thoại.\nScan with your banking or MoMo app.";
+    t.translatesAutoresizingMaskIntoConstraints = NO;
+    _back = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_back setTitle:@"Quay lại / Back" forState:UIControlStateNormal];
+    [_back addTarget:self action:@selector(goBack) forControlEvents:UIControlEventPrimaryActionTriggered];
+    _back.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:qr]; [self.view addSubview:t]; [self.view addSubview:_back];
+    UILayoutGuide *g = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [qr.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:40],
+        [qr.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+        [qr.heightAnchor constraintEqualToAnchor:g.heightAnchor multiplier:0.92],
+        [qr.widthAnchor constraintEqualToAnchor:qr.heightAnchor multiplier:748.0/980.0],
+        [t.leadingAnchor constraintEqualToAnchor:qr.trailingAnchor constant:70],
+        [t.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-40],
+        [t.centerYAnchor constraintEqualToAnchor:g.centerYAnchor constant:-60],
+        [_back.leadingAnchor constraintEqualToAnchor:t.leadingAnchor],
+        [_back.topAnchor constraintEqualToAnchor:t.bottomAnchor constant:50],
+    ]];
+}
+- (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments { return @[_back]; }
+- (void)goBack { [self.navigationController popViewControllerAnimated:YES]; }
+@end
+
 @interface LCTVGuideController : UIViewController
 @end
 @implementation LCTVGuideController { UITextView *_tv; UIButton *_lang; UIImageView *_qr; UILabel *_url; BOOL _vi; }
@@ -281,7 +317,10 @@ static UIImage *qrImage(NSString *str, CGFloat side) {
     UIButton *guide = [UIButton buttonWithType:UIButtonTypeSystem];
     [guide setTitle:@"Hướng dẫn / Guide" forState:UIControlStateNormal];
     [guide addTarget:self action:@selector(openGuide) forControlEvents:UIControlEventPrimaryActionTriggered];
-    UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[guide, refresh, diag]];
+    UIButton *donate = [UIButton buttonWithType:UIButtonTypeSystem];
+    [donate setTitle:@"Ủng hộ / Support" forState:UIControlStateNormal];
+    [donate addTarget:self action:@selector(openDonate) forControlEvents:UIControlEventPrimaryActionTriggered];
+    UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[guide, donate, refresh, diag]];
     btns.spacing = 24;
     _refreshBtn = refresh; _diagBtn = diag;
 
@@ -368,11 +407,13 @@ static UIImage *qrImage(NSString *str, CGFloat side) {
 }
 
 - (void)refreshTapped { [LCTVCert.shared evaluateAndResignAsync:NO]; [self reload]; }
+- (void)openDonate { [self.navigationController pushViewController:[LCTVDonateController new] animated:YES]; }
 - (void)openGuide { [self.navigationController pushViewController:[LCTVGuideController new] animated:YES]; }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     static BOOL shown;
     NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+    if (!shown && [ud boolForKey:@"LCTVShowDonate"]) { shown = YES; [self openDonate]; return; }
     if (!shown && [ud boolForKey:@"LCTVShowGuide"]) { shown = YES; [self openGuide]; return; }
     if (shown || [ud boolForKey:@"LCTVScreenshotDemo"] || [ud boolForKey:@"LCTVFocusTest"]) return;
     BOOL first = ![ud boolForKey:@"LCTVGuideSeen"];
