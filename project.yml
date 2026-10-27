@@ -1,20 +1,46 @@
 name: LiveContainerTV
-options: {bundleIdPrefix: com.hongson117, deploymentTarget: {tvOS: "17.0"}}
-settings: {base: {CODE_SIGNING_ALLOWED: NO, ARCHS: arm64}}
+options:
+  bundleIdPrefix: com.hongson117
+  deploymentTarget:
+    tvOS: "17.0"
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
 targets:
   LiveContainerTV:
     type: application
     platform: tvOS
-    sources: [Host]
+    sources:
+      - Host
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.livecontainertv
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: LiveContainerTV
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_TVTopShelfImage_TVTopShelfPrimaryImage: "App Icon & Top Shelf Image"
     info:
       path: Host/Info.plist
-      properties: {CFBundleDisplayName: LiveContainerTV, UILaunchScreen: {}, UIRequiredDeviceCapabilities: [arm64]}
-    settings: {base: {PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.livecontainertv}}
+      properties:
+        CFBundleDisplayName: LiveContainerTV
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
   GuestDemo:
     type: application
     platform: tvOS
-    sources: [Guest]
+    sources:
+      - Guest
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.guestdemo
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: GuestDemo
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
     info:
       path: Guest/Info.plist
-      properties: {CFBundleDisplayName: GuestDemo, UILaunchScreen: {}}
-    settings: {base: {PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.guestdemo}}
+      properties:
+        CFBundleDisplayName: GuestDemo
+        UILaunchScreen: {}
