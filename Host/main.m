@@ -90,15 +90,38 @@ static void installInfoOverride(NSBundle *host) {
 // Stremio: UIColor(named:"primaryFontColor", in: Bundle(for: X.self))! -> trap. Foundation resolves classes from the
 // dlopen'ed guest exe to the host bundle / nil, so the asset lookup misses. Return the guest bundle for its own classes.
 static IMP gOrigBundleForClass; static const char *gGuestExeReal;
+static int gAssetLogN;
+static void assetLog(NSString *m) { if (gAssetLogN++ < 40) wr([NSString stringWithFormat:@"[asset] %@\n", m].UTF8String); }
 static NSBundle *lc_bundleForClass(id self, SEL _cmd, Class cls) {
     const char *img = cls ? class_getImageName(cls) : NULL;
     if (img && gGuestExeReal) {
         char rp[PATH_MAX]; const char *r = realpath(img, rp) ? rp : img;
-        if (!strcmp(r, gGuestExeReal)) return lc_mainBundle(nil, NULL);
+        if (!strcmp(r, gGuestExeReal)) { assetLog([NSString stringWithFormat:@"bundleForClass %s -> guest", class_getName(cls)]); return lc_mainBundle(nil, NULL); }
+        assetLog([NSString stringWithFormat:@"bundleForClass %s img=%s (not guest exe %s)", class_getName(cls), r, gGuestExeReal]);
     }
     return ((NSBundle *(*)(id, SEL, Class))gOrigBundleForClass)(self, _cmd, cls);
 }
+static IMP gOrigColorNamed, gOrigImageNamed;
+static UIColor *lc_colorNamed(id self, SEL _cmd, NSString *name, NSBundle *bundle, UITraitCollection *tc) {
+    UIColor *c = ((UIColor *(*)(id, SEL, id, id, id))gOrigColorNamed)(self, _cmd, name, bundle, tc);
+    NSString *how = @"ok";
+    if (!c) { c = ((UIColor *(*)(id, SEL, id, id, id))gOrigColorNamed)(self, _cmd, name, lc_mainBundle(nil, NULL), tc); how = c ? @"nil -> ok via guest bundle" : nil; }
+    if (!c) { c = ((UIColor *(*)(id, SEL, id, id, id))gOrigColorNamed)(self, _cmd, name, nil, tc); how = c ? @"nil -> ok via nil bundle" : nil; }
+    if (!c) { c = [UIColor colorWithWhite:0.85 alpha:1]; how = @"NOT FOUND -> placeholder gray (avoids Swift trap)"; }
+    assetLog([NSString stringWithFormat:@"colorNamed '%@' bundle=%@ : %@", name, bundle.bundlePath.lastPathComponent ?: @"(nil)", how]);
+    return c;
+}
+static UIImage *lc_imageNamed(id self, SEL _cmd, NSString *name, NSBundle *bundle, UITraitCollection *tc) {
+    UIImage *i = ((UIImage *(*)(id, SEL, id, id, id))gOrigImageNamed)(self, _cmd, name, bundle, tc);
+    if (!i) { i = ((UIImage *(*)(id, SEL, id, id, id))gOrigImageNamed)(self, _cmd, name, lc_mainBundle(nil, NULL), tc);
+        assetLog([NSString stringWithFormat:@"imageNamed '%@' bundle=%@ nil -> %@", name, bundle.bundlePath.lastPathComponent ?: @"(nil)", i ? @"ok via guest" : @"still nil"]); }
+    return i;
+}
 static void installBundleForClassHook(NSString *execPath) {
+    Method cm = class_getClassMethod(UIColor.class, @selector(colorNamed:inBundle:compatibleWithTraitCollection:));
+    if (cm) gOrigColorNamed = method_setImplementation(cm, (IMP)lc_colorNamed);
+    Method im = class_getClassMethod(UIImage.class, @selector(imageNamed:inBundle:compatibleWithTraitCollection:));
+    if (im) gOrigImageNamed = method_setImplementation(im, (IMP)lc_imageNamed);
     char rp[PATH_MAX]; gGuestExeReal = strdup(realpath(execPath.fileSystemRepresentation, rp) ? rp : execPath.fileSystemRepresentation);
     gOrigBundleForClass = method_setImplementation(class_getClassMethod(NSBundle.class, @selector(bundleForClass:)), (IMP)lc_bundleForClass);
 }

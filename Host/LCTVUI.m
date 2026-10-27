@@ -123,7 +123,7 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     head = [head stringByAppendingFormat:@"Last guest boot timings:\n%@\n\n", [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastBootTimings"] ?: @"(none yet)"];
     NSString *crash = [NSString stringWithContentsOfFile:[LCTVCachesDir() stringByAppendingPathComponent:@"lctv_last_crash.txt"] encoding:NSUTF8StringEncoding error:nil];
     if ([crash containsString:@"==="]) head = [head stringByAppendingFormat:@"LAST GUEST CRASH:\n%@\n\n", crash];
-    else if (crash.length) head = [head stringByAppendingFormat:@"Last guest run: no crash captured (%@)\n\n", [crash stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]];
+    else if (crash.length) head = [head stringByAppendingFormat:@"Last guest run: no crash captured\n%@\n\n", crash];
     NSString *le = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastLaunchErrorCopy"];
     if (le.length) head = [[NSString stringWithFormat:@"LAST LAUNCH FAILURE:\n%@\n\n", le] stringByAppendingString:head];
     NSArray *lines = [[LCTVReadLogTail(20000) componentsSeparatedByString:@"\n"] reverseObjectEnumerator].allObjects;
