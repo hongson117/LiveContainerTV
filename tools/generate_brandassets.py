@@ -73,7 +73,7 @@ def write_layerstack(name, w, h):
     stack = os.path.join(OUT, f"{name}.imagestack")
     os.makedirs(stack, exist_ok=True)
     back, mid, front = make_layers(w, h)
-    layers = [("Back", back), ("Middle", mid), ("Front", front)]
+    layers = [("Front", front), ("Middle", mid), ("Back", back)]  # front→back; last must be opaque
     layer_refs = []
     for lname, img in layers:
         ldir = os.path.join(stack, f"{lname}.imagestacklayer")
