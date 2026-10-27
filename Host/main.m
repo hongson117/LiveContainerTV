@@ -86,6 +86,23 @@ static void installInfoOverride(NSBundle *host) {
     gOrigObjForKey = method_setImplementation(class_getInstanceMethod(NSBundle.class, @selector(objectForInfoDictionaryKey:)), (IMP)lc_objForKey);
 }
 
+#pragma mark - +[NSBundle bundleForClass:] for guest classes
+// Stremio: UIColor(named:"primaryFontColor", in: Bundle(for: X.self))! -> trap. Foundation resolves classes from the
+// dlopen'ed guest exe to the host bundle / nil, so the asset lookup misses. Return the guest bundle for its own classes.
+static IMP gOrigBundleForClass; static const char *gGuestExeReal;
+static NSBundle *lc_bundleForClass(id self, SEL _cmd, Class cls) {
+    const char *img = cls ? class_getImageName(cls) : NULL;
+    if (img && gGuestExeReal) {
+        char rp[PATH_MAX]; const char *r = realpath(img, rp) ? rp : img;
+        if (!strcmp(r, gGuestExeReal)) return lc_mainBundle(nil, NULL);
+    }
+    return ((NSBundle *(*)(id, SEL, Class))gOrigBundleForClass)(self, _cmd, cls);
+}
+static void installBundleForClassHook(NSString *execPath) {
+    char rp[PATH_MAX]; gGuestExeReal = strdup(realpath(execPath.fileSystemRepresentation, rp) ? rp : execPath.fileSystemRepresentation);
+    gOrigBundleForClass = method_setImplementation(class_getClassMethod(NSBundle.class, @selector(bundleForClass:)), (IMP)lc_bundleForClass);
+}
+
 #pragma mark - CFBundle main-bundle redirect + fonts
 /// UIKit/CoreUI/CoreText call CFBundleGetMainBundle() inside the shared cache (no GOT -> not hookable by symbol rebinding).
 /// LiveContainer-style: patch the host main CFBundle's internal pointer fields (bundle URL, info dict, resources URL,
@@ -113,6 +130,7 @@ static void registerGuestFonts(NSString *guestPath, NSDictionary *info) {
         NSURL *u = [NSURL fileURLWithPath:[guestPath stringByAppendingPathComponent:f]];
         CFErrorRef e = NULL;
         if (CTFontManagerRegisterFontsForURL((__bridge CFURLRef)u, kCTFontManagerScopeProcess, &e)) ok++;
+        else if (e && CFErrorGetCode(e) == kCTFontManagerErrorAlreadyRegistered) { ok++; CFRelease(e); } // UIKit already did it from UIAppFonts
         else { LCTVLog(@"font register failed %@: %@", f, e ? CFBridgingRelease(e) : nil); }
     }
     if (fonts.count) LCTVLog(@"fonts: registered %d/%lu UIAppFonts", ok, (unsigned long)fonts.count);
@@ -197,6 +215,7 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         NSBundle *hostBundle = NSBundle.mainBundle;
         method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
         installInfoOverride(hostBundle);
+        installBundleForClassHook(execPath);
         redirectMainCFBundle(fwOrAppPath);
         registerGuestFonts(fwOrAppPath, gGuestInfo);
         preloadFrameworks(fwOrAppPath);
