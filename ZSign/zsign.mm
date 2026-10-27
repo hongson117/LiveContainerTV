@@ -281,6 +281,8 @@ int checkCert(NSData *key,
         [filesToSign addObject:fileURL.path];
     }
     
+    NSLog(@"[LCTV] ZSign files to sign: %lu", (unsigned long)filesToSign.count);
+    for (NSString *f in filesToSign) NSLog(@"[LCTV] ZSign: %@", f);
     return [ZSigner signMachOPathArr:filesToSign bundleId:bundleId cert:key pass:pass completionHandler:completionHandler];
 }
 

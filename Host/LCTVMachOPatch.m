@@ -84,3 +84,67 @@ BOOL LCTVPatchExecToDylib(NSString *path, NSError **error) {
     LCTVLog(@"patch: OK %@", path);
     return YES;
 }
+
+#pragma mark - Load path fixups (rpath / @executable_path)
+
+static BOOL rewriteStr(uint8_t *cmdBase, uint32_t cmdsize, uint32_t strOff, NSString *from, NSString *to, NSString *tag) {
+    char *s = (char *)cmdBase + strOff;
+    size_t cap = cmdsize - strOff;
+    NSString *cur = [[NSString alloc] initWithBytes:s length:strnlen(s, cap) encoding:NSUTF8StringEncoding];
+    if (![cur hasPrefix:from]) return NO;
+    NSString *nw = [to stringByAppendingString:[cur substringFromIndex:from.length]];
+    const char *n = nw.UTF8String; size_t nl = strlen(n) + 1;
+    if (nl > cap) { LCTVLog(@"fixup: no room %@ '%@' -> '%@'", tag, cur, nw); return NO; }
+    memset(s, 0, cap); memcpy(s, n, nl);
+    LCTVLog(@"fixup: %@ '%@' -> '%@'", tag, cur, nw);
+    return YES;
+}
+
+BOOL LCTVFixGuestLoadPaths(NSString *path, NSString *relToAppRoot, BOOL addLoaderRpath, NSError **error) {
+    NSMutableData *data = [NSMutableData dataWithContentsOfFile:path options:0 error:error];
+    if (!data || data.length < sizeof(struct mach_header_64)) return NO;
+    uint8_t *bytes = data.mutableBytes;
+    if (*(uint32_t *)bytes != MH_MAGIC_64) { LCTVLog(@"fixup: skip non-thin %@", path.lastPathComponent); return YES; }
+    struct mach_header_64 *hdr = (void *)bytes;
+    // @executable_path inside the guest means the guest .app root
+    NSString *exeRepl = relToAppRoot.length ? [@"@loader_path/" stringByAppendingString:relToAppRoot] : @"@loader_path";
+    uint8_t *p = bytes + sizeof(*hdr);
+    uint32_t firstSect = UINT32_MAX; BOOL hasLoaderFw = NO; BOOL changed = NO;
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (void *)p;
+        if (lc->cmd == LC_RPATH) {
+            struct rpath_command *rc = (void *)lc;
+            const char *s = (char *)lc + rc->path.offset;
+            if (!strcmp(s, "@loader_path/Frameworks")) hasLoaderFw = YES;
+            changed |= rewriteStr(p, lc->cmdsize, rc->path.offset, @"@executable_path", exeRepl, @"rpath");
+            if (!strcmp((char *)lc + rc->path.offset, "@loader_path/Frameworks")) hasLoaderFw = YES;
+        } else if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB || lc->cmd == LC_REEXPORT_DYLIB || lc->cmd == LC_LAZY_LOAD_DYLIB) {
+            struct dylib_command *dc = (void *)lc;
+            changed |= rewriteStr(p, lc->cmdsize, dc->dylib.name.offset, @"@executable_path", exeRepl, @"dylib");
+        } else if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *seg = (void *)lc;
+            struct section_64 *sect = (void *)(seg + 1);
+            for (uint32_t j = 0; j < seg->nsects; j++)
+                if (sect[j].offset && sect[j].offset < firstSect) firstSect = sect[j].offset;
+        }
+        p += lc->cmdsize;
+    }
+    if (addLoaderRpath && !hasLoaderFw) {
+        const char *rp = "@loader_path/Frameworks";
+        uint32_t sz = rnd8((uint32_t)sizeof(struct rpath_command) + (uint32_t)strlen(rp) + 1);
+        uint32_t end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
+        uint32_t freeSp = (firstSect == UINT32_MAX ? end : firstSect) - end;
+        if (freeSp >= sz) {
+            struct rpath_command *rc = (void *)(bytes + end);
+            memset(rc, 0, sz);
+            rc->cmd = LC_RPATH; rc->cmdsize = sz; rc->path.offset = sizeof(struct rpath_command);
+            strcpy((char *)rc + sizeof(struct rpath_command), rp);
+            hdr->ncmds++; hdr->sizeofcmds += sz; changed = YES;
+            LCTVLog(@"fixup: added LC_RPATH @loader_path/Frameworks to %@", path.lastPathComponent);
+        } else {
+            LCTVLog(@"fixup: WARNING no header space for LC_RPATH (free=%u) in %@", freeSp, path.lastPathComponent);
+        }
+    }
+    if (changed && ![data writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+    return YES;
+}

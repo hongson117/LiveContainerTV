@@ -178,6 +178,26 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
 
     if (!LCTVPatchExecToDylib(app.execPath, &err))
         return [NSString stringWithFormat:@"patch failed: %@", err.localizedDescription];
+    // Fix load paths: guest main exe gets LC_RPATH @loader_path/Frameworks; every nested Mach-O gets
+    // @executable_path rewritten relative to the guest .app root (dyld would otherwise resolve to the host).
+    LCTVFixGuestLoadPaths(app.execPath, @"", YES, nil);
+    NSDirectoryEnumerator *en = [[NSFileManager defaultManager] enumeratorAtPath:app.appPath];
+    NSString *rel; NSUInteger nFix = 0;
+    while ((rel = [en nextObject])) {
+        NSString *full = [app.appPath stringByAppendingPathComponent:rel];
+        if ([full isEqualToString:app.execPath]) continue;
+        BOOL dir = NO; [[NSFileManager defaultManager] fileExistsAtPath:full isDirectory:&dir];
+        if (dir) continue;
+        NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:full];
+        NSData *m = [fh readDataOfLength:4]; [fh closeFile];
+        if (m.length < 4 || *(const uint32_t *)m.bytes != 0xfeedfacf) continue;
+        NSUInteger depth = rel.stringByDeletingLastPathComponent.pathComponents.count;
+        NSMutableArray *ups = [NSMutableArray new];
+        for (NSUInteger i = 0; i < depth; i++) [ups addObject:@".."];
+        LCTVFixGuestLoadPaths(full, [ups componentsJoinedByString:@"/"], NO, nil);
+        nFix++;
+    }
+    LCTVLog(@"fixup: scanned %lu nested Mach-O files", (unsigned long)nFix);
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:[@"patched." stringByAppendingString:app.bundleId]];
 
     if (![self hasCertificate]) {
@@ -206,7 +226,7 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
         return signErr;
     }
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:[@"signed." stringByAppendingString:app.bundleId]];
-    LCTVLog(@"signed OK %@", app.bundleId);
+    LCTVLog(@"signed OK %@ (ZSign signs each Mach-O in place; no _CodeSignature folder is expected)", app.bundleId);
     return nil;
 }
 

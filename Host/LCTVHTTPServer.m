@@ -116,7 +116,7 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
     const uint8_t *p = out.bytes; size_t left = out.length;
     while (left > 0) {
         ssize_t n = send(fd, p, left, 0);
-        if (n < 0) { if (errno == EINTR) continue; LCTVLog(@"send error: %s", strerror(errno)); break; }
+        if (n < 0) { if (errno == EINTR) continue; if (errno != EPIPE && errno != ECONNRESET) LCTVLog(@"send error: %s", strerror(errno)); break; }
         if (n == 0) break;
         p += n; left -= (size_t)n;
     }
