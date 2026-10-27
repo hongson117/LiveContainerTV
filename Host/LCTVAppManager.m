@@ -1,3 +1,4 @@
+#import <sys/stat.h>
 #import "LCTVAppManager.h"
 #import "LCTVCommon.h"
 #import "LCTVMachOPatch.h"
@@ -19,6 +20,37 @@ static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
 @implementation LCTVAppManager
 
 + (instancetype)shared { static LCTVAppManager *s; static dispatch_once_t o; dispatch_once(&o,^{ s=[self new]; }); return s; }
+
+static NSString *exeStamp(NSString *path) {
+    struct stat st; if (stat(path.fileSystemRepresentation, &st) != 0) return nil;
+    return [NSString stringWithFormat:@"%lld:%ld.%ld:%llu", (long long)st.st_size, (long)st.st_mtimespec.tv_sec, (long)st.st_mtimespec.tv_nsec, (unsigned long long)st.st_ino];
+}
+/// Prepared-state manifest: exe stamp + cert fp recorded after patch+fixup+sign. Equal => nothing to do at launch.
+- (BOOL)isPreparedFast:(LCTVImportedApp *)app {
+    NSString *want = [[NSUserDefaults standardUserDefaults] stringForKey:[@"prep." stringByAppendingString:app.bundleId]];
+    NSString *have = exeStamp(app.execPath);
+    return want.length && have && [want isEqual:have];
+}
+- (void)recordPrepared:(LCTVImportedApp *)app {
+    NSString *st = exeStamp(app.execPath);
+    if (st) [[NSUserDefaults standardUserDefaults] setObject:st forKey:[@"prep." stringByAppendingString:app.bundleId]];
+}
+/// O(1) lookup for the guest boot path: no directory scan of other apps, no signature parsing.
+- (LCTVImportedApp *)appForBundleIdFast:(NSString *)bid {
+    NSString *dir = [LCTVAppsDir() stringByAppendingPathComponent:bid];
+    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
+        if (![f.pathExtension.lowercaseString isEqual:@"app"]) continue;
+        NSString *app = [dir stringByAppendingPathComponent:f];
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[app stringByAppendingPathComponent:@"Info.plist"]];
+        LCTVImportedApp *a = [LCTVImportedApp new];
+        a.bundleId = info[@"CFBundleIdentifier"] ?: bid;
+        a.name = info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: f.stringByDeletingPathExtension;
+        a.appPath = app;
+        a.execPath = [app stringByAppendingPathComponent:info[@"CFBundleExecutable"] ?: f.stringByDeletingPathExtension];
+        return a;
+    }
+    return nil;
+}
 
 - (void)registerAppIfNeeded:(LCTVImportedApp *)a {
     NSDictionary *reg = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry];
@@ -52,7 +84,11 @@ static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
             if (![fm fileExistsAtPath:a.execPath]) a.purged = YES;
             else {
                 // Trust the real signature over metadata (handles apps signed by older builds / migrated)
-                NSString *fp = LCTVSignerFingerprint(a.execPath);
+                NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+                NSString *stamp = exeStamp(a.execPath), *sk = [@"sigStamp." stringByAppendingString:a.bundleId];
+                NSString *fp = nil;
+                if (stamp && [[ud stringForKey:sk] isEqual:stamp]) fp = a.signedFingerprint;
+                else { fp = LCTVSignerFingerprint(a.execPath); if (stamp && fp) [ud setObject:stamp forKey:sk]; }
                 if (fp) {
                     if (![fp isEqual:a.signedFingerprint]) {
                         a.signedFingerprint = fp;
@@ -284,6 +320,7 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
     if (fp) [[NSUserDefaults standardUserDefaults] setObject:fp forKey:[@"signedFP." stringByAppendingString:app.bundleId]];
     [[NSUserDefaults standardUserDefaults] setObject:[NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle]
                                               forKey:[@"signedAt." stringByAppendingString:app.bundleId]];
+    [self recordPrepared:app];
     LCTVLog(@"signed OK %@ (ZSign signs each Mach-O in place; no _CodeSignature folder is expected)", app.bundleId);
     return nil;
 }
@@ -300,7 +337,7 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
     NSMutableDictionary *reg = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry] mutableCopy];
     [reg removeObjectForKey:bid];
     [[NSUserDefaults standardUserDefaults] setObject:reg ?: @{} forKey:kRegistry];
-    for (NSString *k in @[@"signed.", @"signedFP.", @"signedAt.", @"patched."]) [[NSUserDefaults standardUserDefaults] removeObjectForKey:[k stringByAppendingString:bid]];
+    for (NSString *k in @[@"signed.", @"signedFP.", @"signedAt.", @"patched.", @"prep.", @"sigStamp."]) [[NSUserDefaults standardUserDefaults] removeObjectForKey:[k stringByAppendingString:bid]];
     [NSFileManager.defaultManager removeItemAtPath:[self iconCachePath:bid] error:nil];
     [gIconMem removeObjectForKey:bid];
 }

@@ -32,6 +32,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSString *)certificatePassword;
 - (nullable NSData *)certificateData;
 /// Patch + sign guest .app. Returns nil on success, error string otherwise.
+- (BOOL)isPreparedFast:(LCTVImportedApp *)app;
+- (void)recordPrepared:(LCTVImportedApp *)app;
+- (nullable LCTVImportedApp *)appForBundleIdFast:(NSString *)bid;
 - (nullable NSString *)prepareAppForLaunch:(LCTVImportedApp *)app;
 /// Guest icon (cached PNG in Application Support; extracted from Assets.car/PNGs, else letter tile).
 - (UIImage *)iconForApp:(LCTVImportedApp *)app;

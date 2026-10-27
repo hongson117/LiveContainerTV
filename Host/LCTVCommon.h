@@ -15,6 +15,7 @@ NSString *LCTVCertPath(void);
 NSString *LCTVDataDir(void);
 NSString *LCTVIconsDir(void);
 extern NSString *LCTVDataDirKind;
+extern BOOL LCTVQuiet; // set once a guest is running: logging becomes a no-op
 /// SHA1 (hex, upper) of leaf cert in the Mach-O CMS code signature, nil if unsigned / ad-hoc.
 NSString *LCTVSignerFingerprint(NSString *execPath);
 extern NSString *const LCTVStateChangedNotification;

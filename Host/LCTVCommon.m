@@ -53,7 +53,9 @@ NSString *LCTVIconsDir(void) {
 NSString *LCTVCertPath(void) { return [LCTVDataDir() stringByAppendingPathComponent:@"cert.p12"]; }
 NSString *LCTVCertPassPath(void) { return [LCTVDataDir() stringByAppendingPathComponent:@"cert.pass"]; }
 
+BOOL LCTVQuiet = NO;
 void LCTVLog(NSString *fmt, ...) {
+    if (LCTVQuiet) return;
     va_list ap; va_start(ap, fmt);
     NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);

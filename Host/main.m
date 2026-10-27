@@ -12,6 +12,20 @@
 #import "LCTVCert.h"
 
 static NSString *gGuestBundlePath;
+#import <mach/mach_time.h>
+static uint64_t gT0, gTLast; static NSMutableString *gTimings;
+static double msSince(uint64_t t) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); return (mach_absolute_time() - t) * (double)tb.numer / tb.denom / 1e6; }
+static void T(NSString *step) {
+    if (!gTimings) gTimings = [NSMutableString new];
+    [gTimings appendFormat:@"%@ +%.1fms (t=%.1fms)\n", step, msSince(gTLast), msSince(gT0)];
+    gTLast = mach_absolute_time();
+}
+static void flushTimings(NSString *label) {
+    if (!gTimings) return;
+    NSString *s = [NSString stringWithFormat:@"%@ boot (%@):\n%@", label, [NSDate date], gTimings];
+    [NSUserDefaults.standardUserDefaults setObject:s forKey:@"LCTVLastBootTimings"];
+    LCTVLog(@"timings:\n%@", gTimings);
+}
 
 static NSString *LCTVForceHostPath(void) {
     return [LCTVCachesDir() stringByAppendingPathComponent:@"lctv_force_host"];
@@ -27,15 +41,12 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
     @try {
         LCTVLog(@"launchGuest begin label=%@ path=%@", label, execPath);
         gGuestBundlePath = fwOrAppPath;
-        BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:execPath];
-        LCTVLog(@"exe exists=%d  _CodeSignature=%d", exists,
-                [[NSFileManager defaultManager] fileExistsAtPath:[fwOrAppPath stringByAppendingPathComponent:@"_CodeSignature"]]);
-        if (!exists) { LCTVLog(@"ABORT missing exec"); return -1; }
-        struct stat st; if (stat(execPath.UTF8String, &st) == 0) LCTVLog(@"exe size=%lld", (long long)st.st_size);
         dlerror();
+        T(@"pre-dlopen");
         void *h = dlopen(execPath.UTF8String, RTLD_LAZY|RTLD_GLOBAL|RTLD_FIRST);
         const char *dle = dlerror();
-        LCTVLog(@"dlopen handle=%p dlerror=%s", h, dle ? dle : "(null)");
+        T(@"dlopen");
+        if (!h) LCTVLog(@"dlopen failed: %s", dle ? dle : "(null)");
         if (!h) return -1;
         const struct mach_header_64 *hdr = NULL;
         NSString *needle = execPath.lastPathComponent;
@@ -60,7 +71,9 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         if (!entryoff) { LCTVLog(@"ABORT no LC_MAIN"); return -1; }
         method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
         int (*guestMain)(int, char **, char **) = (void *)((uint8_t *)hdr + (entryoff - textFileoff));
-        LCTVLog(@"jumping to guest main %p", guestMain);
+        T(@"resolve main");
+        flushTimings(label);
+        LCTVQuiet = ![NSUserDefaults.standardUserDefaults boolForKey:@"LCTVVerboseGuest"]; // no host logging while guest runs
         extern char **environ;
         return guestMain(argc, argv, environ);
     } @catch (NSException *ex) {
@@ -137,6 +150,7 @@ static NSString *consumePendingIfFresh(void) {
 @end
 @implementation LCTVAppDelegate
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o {
+    LCTVLog(@"==== host boot pid=%d", getpid());
     NSError *err = nil;
     if (![LCTVHTTPServer.shared start:&err]) LCTVLog(@"HTTP start failed: %@", err);
     clearPending(); // belt-and-suspenders while host UI is up
@@ -161,8 +175,9 @@ static NSString *consumePendingIfFresh(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        LCTVLog(@"==== boot pid=%d %@", getpid(), NSBundle.mainBundle.bundleIdentifier);
+        gT0 = gTLast = mach_absolute_time();
         NSString *sel = consumePendingIfFresh();
+        T(@"pending check");
         if (sel.length) {
             // Flag already cleared inside consumePendingIfFresh
             int r = -1;
@@ -172,12 +187,17 @@ int main(int argc, char *argv[]) {
                 r = launchGuestAtPath(fw, [fw stringByAppendingPathComponent:name], name, argc, argv);
             } else if ([sel hasPrefix:@"import:"]) {
                 NSString *bid = [sel substringFromIndex:7];
-                LCTVImportedApp *app = nil;
-                for (LCTVImportedApp *a in LCTVAppManager.shared.importedApps) if ([a.bundleId isEqual:bid]) { app = a; break; }
+                LCTVImportedApp *app = [LCTVAppManager.shared appForBundleIdFast:bid];
+                T(@"lookup");
                 if (!app) LCTVLog(@"ABORT imported app not found %@", bid);
                 else {
-                    NSString *prep = [LCTVAppManager.shared prepareAppForLaunch:app];
-                    if (prep) LCTVLog(@"prepare: %@", prep);
+                    // Fast path: host already patched+fixed+signed this exact exe (manifest) -> straight to dlopen.
+                    if (![LCTVAppManager.shared isPreparedFast:app]) {
+                        LCTVLog(@"boot: manifest miss for %@ — preparing (slow, one-time)", bid);
+                        NSString *prep = [LCTVAppManager.shared prepareAppForLaunch:app];
+                        if (prep) LCTVLog(@"prepare: %@", prep);
+                        T(@"prepare (manifest miss)");
+                    } else T(@"manifest hit");
                     r = launchGuestAtPath(app.appPath, app.execPath, app.name, argc, argv);
                 }
             } else {
@@ -186,6 +206,7 @@ int main(int argc, char *argv[]) {
                 r = launchGuestAtPath(fw, [fw stringByAppendingPathComponent:sel], sel, argc, argv);
             }
             if (r != -1) return r;
+            flushTimings(@"failed");
             NSString *err = LCTVReadLogTail(8000);
             [NSUserDefaults.standardUserDefaults setObject:err forKey:@"LCTVLastLaunchError"];
             LCTVLog(@"launch failed; showing host UI");

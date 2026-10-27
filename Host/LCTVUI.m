@@ -119,6 +119,7 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     NSString *head = [NSString stringWithFormat:@"Web: %@\n%@\nHost cert SHA1: %@\np12 cert SHA1:  %@\nTeam: %@\nData dir: %@ (%@)\n\n",
                       LCTVHTTPServer.shared.lanURL ?: @"?", c.summary, c.hostFingerprint ?: @"(no embedded.mobileprovision)",
                       c.p12Fingerprint ?: @"-", c.teamName ?: @"-", LCTVDataDir(), LCTVDataDirKind];
+    head = [head stringByAppendingFormat:@"Last guest boot timings:\n%@\n\n", [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastBootTimings"] ?: @"(none yet)"];
     _tv.text = [head stringByAppendingString:LCTVReadLogTail(20000)];
     [_tv scrollRangeToVisible:NSMakeRange(_tv.text.length, 0)];
 }
@@ -343,20 +344,44 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     [self presentViewController:s animated:YES completion:nil];
 }
 
-- (void)launch:(LCTVTile *)t {
-    NSString *msg = [NSString stringWithFormat:@"LiveContainerTV will close. Open it again within 90 seconds to start %@.\n\nPress Menu in the app to come back here.", t.title];
+- (void)launchNow:(LCTVTile *)t {
+    NSString *payload = [NSString stringWithFormat:@"%@\n%.0f", t.token, [[NSDate date] timeIntervalSince1970]];
+    NSError *err = nil;
+    BOOL ok = [payload writeToFile:LCTVPendingPath() atomically:YES encoding:NSUTF8StringEncoding error:&err];
+    [[NSFileManager defaultManager] removeItemAtPath:forceHostPath() error:nil];
+    [NSUserDefaults.standardUserDefaults setObject:t.token forKey:@"LCTVSelectedGuest"];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    LCTVLog(@"wrote pending=%@ ok=%d err=%@", payload, ok, err);
+    exit(0);
+}
+- (void)launchPrepared:(LCTVTile *)t {
+    NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+    if ([ud boolForKey:@"LCTVSkipLaunchHint"]) { [self launchNow:t]; return; }
+    NSString *msg = [NSString stringWithFormat:@"tvOS doesn't let an app restart itself, so LiveContainerTV closes now. Open it again within 90 seconds and %@ starts straight away.\n\nPress Menu inside the app to come back here.", t.title];
     UIAlertController *a = [UIAlertController alertControllerWithTitle:[@"Launch " stringByAppendingString:t.title] message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Close & relaunch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-        NSString *payload = [NSString stringWithFormat:@"%@\n%.0f", t.token, [[NSDate date] timeIntervalSince1970]];
-        NSError *err = nil;
-        BOOL ok = [payload writeToFile:LCTVPendingPath() atomically:YES encoding:NSUTF8StringEncoding error:&err];
-        [[NSFileManager defaultManager] removeItemAtPath:forceHostPath() error:nil];
-        [NSUserDefaults.standardUserDefaults setObject:t.token forKey:@"LCTVSelectedGuest"];
-        [NSUserDefaults.standardUserDefaults synchronize];
-        LCTVLog(@"wrote pending=%@ ok=%d err=%@", payload, ok, err);
-        fflush(NULL); usleep(200000); exit(0);
-    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Close & relaunch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [self launchNow:t]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Don't ask again" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [ud setBool:YES forKey:@"LCTVSkipLaunchHint"]; [self launchNow:t]; }]];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:a animated:YES completion:nil];
+}
+- (void)launch:(LCTVTile *)t {
+    LCTVImportedApp *app = t.app;
+    if (!app || [LCTVAppManager.shared isPreparedFast:app]) { [self launchPrepared:t]; return; }
+    // Do the expensive patch/fixup/sign NOW in host mode so the guest boot is just dlopen.
+    UIAlertController *wait = [UIAlertController alertControllerWithTitle:[@"Preparing " stringByAppendingString:t.title] message:@"One-time setup (patch + sign). Next launches skip this." preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:wait animated:YES completion:nil];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *e = [LCTVAppManager.shared prepareAppForLaunch:app];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [wait dismissViewControllerAnimated:YES completion:^{
+                if (e && ![LCTVAppManager.shared isPreparedFast:app]) {
+                    UIAlertController *f = [UIAlertController alertControllerWithTitle:@"Prepare failed" message:e preferredStyle:UIAlertControllerStyleAlert];
+                    [f addAction:[UIAlertAction actionWithTitle:@"Launch anyway" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [self launchPrepared:t]; }]];
+                    [f addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+                    [self presentViewController:f animated:YES completion:nil];
+                } else [self launchPrepared:t];
+            }];
+        });
+    });
 }
 @end
