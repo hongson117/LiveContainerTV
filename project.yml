@@ -8,12 +8,23 @@ settings:
     CODE_SIGNING_ALLOWED: NO
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: NO
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_ENABLE_MODULES: YES
 targets:
   LiveContainerTV:
     type: application
     platform: tvOS
     sources:
-      - Host
+      - path: Host
+        excludes:
+          - "**/*.md"
+      - path: ZSign
+        excludes:
+          - "**/*.md"
+    dependencies:
+      - sdk: libz.tbd
+      - framework: OpenSSL/Frameworks/OpenSSL.xcframework
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.livecontainertv
@@ -21,13 +32,25 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: LiveContainerTV
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_TVTopShelfImage_TVTopShelfPrimaryImage: "App Icon & Top Shelf Image"
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/ZSign"
+          - "$(PROJECT_DIR)/ZSign/common"
+          - "$(PROJECT_DIR)/OpenSSL/Frameworks/OpenSSL.xcframework/tvos-arm64/OpenSSL.framework/Headers"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/OpenSSL/Frameworks"
+        OTHER_LDFLAGS:
+          - "-lc++"
+          - "-lz"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
     info:
       path: Host/Info.plist
       properties:
         CFBundleDisplayName: LiveContainerTV
         UILaunchScreen: {}
         UIRequiredDeviceCapabilities: [arm64]
+        NSLocalNetworkUsageDescription: "LiveContainerTV runs a local web server so you can upload IPAs from your computer."
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
   GuestDemo:
     type: application
     platform: tvOS
