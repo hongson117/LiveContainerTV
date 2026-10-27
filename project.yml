@@ -1,0 +1,20 @@
+name: LiveContainerTV
+options: {bundleIdPrefix: com.hongson117, deploymentTarget: {tvOS: "17.0"}}
+settings: {base: {CODE_SIGNING_ALLOWED: NO, ARCHS: arm64}}
+targets:
+  LiveContainerTV:
+    type: application
+    platform: tvOS
+    sources: [Host]
+    info:
+      path: Host/Info.plist
+      properties: {CFBundleDisplayName: LiveContainerTV, UILaunchScreen: {}, UIRequiredDeviceCapabilities: [arm64]}
+    settings: {base: {PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.livecontainertv}}
+  GuestDemo:
+    type: application
+    platform: tvOS
+    sources: [Guest]
+    info:
+      path: Guest/Info.plist
+      properties: {CFBundleDisplayName: GuestDemo, UILaunchScreen: {}}
+    settings: {base: {PRODUCT_BUNDLE_IDENTIFIER: com.hongson117.guestdemo}}

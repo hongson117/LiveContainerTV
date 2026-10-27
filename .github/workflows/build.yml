@@ -1,0 +1,26 @@
+name: Build LiveContainerTV IPA
+on: {push: {branches: [main]}, workflow_dispatch: {}}
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen && xcodegen generate && xcodebuild -version
+      - name: Build
+        run: |
+          for t in LiveContainerTV GuestDemo; do
+            xcodebuild build -project LiveContainerTV.xcodeproj -target $t -sdk appletvos -configuration Release \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" SYMROOT=$PWD/build
+          done
+      - name: Package
+        run: |
+          set -ex
+          APP=build/Release-appletvos/LiveContainerTV.app; G=build/Release-appletvos/GuestDemo.app
+          FW=$APP/Frameworks/GuestDemo.framework; mkdir -p $FW
+          cp -R $G/* $FW/; rm -rf $FW/_CodeSignature
+          plutil -replace CFBundlePackageType -string FMWK $FW/Info.plist
+          plutil -replace LCTVGuest -bool YES $FW/Info.plist
+          lipo -info $FW/GuestDemo; python3 tools/patch_macho.py $FW/GuestDemo; otool -hv $FW/GuestDemo
+          mkdir -p out/Payload && cp -R $APP out/Payload/ && (cd out && zip -qry LiveContainerTV.ipa Payload) && ls -l out
+      - uses: actions/upload-artifact@v4
+        with: {name: LiveContainerTV-ipa, path: out/LiveContainerTV.ipa}
