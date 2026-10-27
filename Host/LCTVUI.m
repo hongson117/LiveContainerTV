@@ -80,7 +80,7 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
 
 #pragma mark - Diagnostics
 
-@interface LCTVDiagController : UIViewController
+@interface LCTVDiagController ()
 @property UITextView *tv;
 @end
 @implementation LCTVDiagController
@@ -124,8 +124,11 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     NSString *crash = [NSString stringWithContentsOfFile:[LCTVCachesDir() stringByAppendingPathComponent:@"lctv_last_crash.txt"] encoding:NSUTF8StringEncoding error:nil];
     if ([crash containsString:@"==="]) head = [head stringByAppendingFormat:@"LAST GUEST CRASH:\n%@\n\n", crash];
     else if (crash.length) head = [head stringByAppendingFormat:@"Last guest run: no crash captured (%@)\n\n", [crash stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]];
-    _tv.text = [head stringByAppendingString:LCTVReadLogTail(20000)];
-    [_tv scrollRangeToVisible:NSMakeRange(_tv.text.length, 0)];
+    NSString *le = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastLaunchErrorCopy"];
+    if (le.length) head = [[NSString stringWithFormat:@"LAST LAUNCH FAILURE:\n%@\n\n", le] stringByAppendingString:head];
+    NSArray *lines = [[LCTVReadLogTail(20000) componentsSeparatedByString:@"\n"] reverseObjectEnumerator].allObjects;
+    _tv.text = [head stringByAppendingFormat:@"Log (newest first):\n%@", [lines componentsJoinedByString:@"\n"]];
+    [_tv setContentOffset:CGPointZero animated:NO];
 }
 - (void)resignAll { [LCTVCert.shared evaluateAndResignAsync:YES]; [self reload]; }
 - (void)clearLog { [@"" writeToFile:LCTVLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil]; [self reload]; }

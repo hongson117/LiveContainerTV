@@ -15,7 +15,12 @@ static NSString *gGuestBundlePath;
 #import <execinfo.h>
 #import <signal.h>
 #import <fcntl.h>
+#import <mach-o/fat.h>
 #import <dlfcn.h>
+
+static NSMutableArray *gFailReasons;
+static void LCTVFail(NSString *r) { if (!gFailReasons) gFailReasons = [NSMutableArray new]; [gFailReasons addObject:r]; LCTVLog(@"FAIL %@", r); }
+static NSString *gPreloadSummary;
 
 #pragma mark - Crash capture (guest)
 static int gCrashFD = -1;
@@ -64,6 +69,22 @@ static NSURL *lc_groupURL(id self, SEL _cmd, NSString *gid) {
     return [NSURL fileURLWithPath:d isDirectory:YES];
 }
 
+#pragma mark - Info.plist override: host bundle instance reports guest's Info.plist
+static NSBundle *gHostBundleObj; static NSDictionary *gGuestInfo; static IMP gOrigInfo, gOrigObjForKey;
+static NSBundle *lc_mainBundle(id self, SEL _cmd);
+static NSDictionary *lc_info(NSBundle *self, SEL _cmd) {
+    if (self == gHostBundleObj && gGuestInfo) return gGuestInfo;
+    return ((NSDictionary *(*)(id, SEL))gOrigInfo)(self, _cmd); }
+static id lc_objForKey(NSBundle *self, SEL _cmd, NSString *k) {
+    if (self == gHostBundleObj && gGuestInfo) return gGuestInfo[k];
+    return ((id (*)(id, SEL, id))gOrigObjForKey)(self, _cmd, k); }
+static void installInfoOverride(NSBundle *host) {
+    gHostBundleObj = host;
+    gGuestInfo = [NSDictionary dictionaryWithContentsOfFile:[gGuestBundlePath stringByAppendingPathComponent:@"Info.plist"]];
+    gOrigInfo = method_setImplementation(class_getInstanceMethod(NSBundle.class, @selector(infoDictionary)), (IMP)lc_info);
+    gOrigObjForKey = method_setImplementation(class_getInstanceMethod(NSBundle.class, @selector(objectForInfoDictionaryKey:)), (IMP)lc_objForKey);
+}
+
 #pragma mark - Guest preflight
 static void logGuestInfo(NSString *bundlePath) {
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[bundlePath stringByAppendingPathComponent:@"Info.plist"]];
@@ -91,6 +112,9 @@ static void preloadFrameworks(NSString *bundlePath) {
         } else if ([f.pathExtension isEqual:@"dylib"]) [todo addObject:full];
     }
     NSUInteger loaded = 0; NSString *lastErr = nil;
+    [todo filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *p, id b) {
+        FILE *f = fopen(p.fileSystemRepresentation, "rb"); if (!f) return NO; uint32_t m = 0; fread(&m, 4, 1, f); fclose(f);
+        return m == MH_MAGIC_64 || m == FAT_CIGAM || m == FAT_MAGIC; }]];
     for (int pass = 0; pass < 6 && todo.count; pass++) {
         NSMutableArray *left = [NSMutableArray new];
         for (NSString *p in todo) {
@@ -100,6 +124,7 @@ static void preloadFrameworks(NSString *bundlePath) {
         if (left.count == todo.count) break;
         todo = left;
     }
+    gPreloadSummary = [NSString stringWithFormat:@"preload: %lu loaded, %lu failed%@", (unsigned long)loaded, (unsigned long)todo.count, todo.count ? [NSString stringWithFormat:@" %@ (%@)", [todo valueForKey:@"lastPathComponent"], lastErr] : @""];
     LCTVLog(@"preload: %lu frameworks loaded, %lu failed%@", (unsigned long)loaded, (unsigned long)todo.count, todo.count ? [@" last error: " stringByAppendingString:lastErr ?: @"?"] : @"");
 }
 #import <mach/mach_time.h>
@@ -136,25 +161,38 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         Method gm = class_getInstanceMethod(NSFileManager.class, @selector(containerURLForSecurityApplicationGroupIdentifier:));
         if (gm) gOrigGroupURL = method_setImplementation(gm, (IMP)lc_groupURL);
         T(@"pre-dlopen setup");
+        NSBundle *hostBundle = NSBundle.mainBundle;
+        method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
+        installInfoOverride(hostBundle);
         preloadFrameworks(fwOrAppPath);
         T(@"preload frameworks");
         dlerror();
         void *h = dlopen(execPath.UTF8String, RTLD_LAZY|RTLD_GLOBAL|RTLD_FIRST);
         const char *dle = dlerror();
         T(@"dlopen");
-        if (!h) LCTVLog(@"dlopen failed: %s", dle ? dle : "(null)");
+        if (!h) LCTVFail([NSString stringWithFormat:@"dlopen failed: %s", dle ? dle : "(null)"]);
         if (!h) return -1;
         const struct mach_header_64 *hdr = NULL;
-        NSString *needle = execPath.lastPathComponent;
+        // Exact match only (old strstr matched Stremio.app/Frameworks/TVVLCKit...). Normalize /private/var vs /var.
+        NSString *(^norm)(NSString *) = ^NSString *(NSString *x) {
+            x = x.stringByResolvingSymlinksInPath.stringByStandardizingPath;
+            return [x hasPrefix:@"/private/"] ? [x substringFromIndex:8] : x; };
+        NSString *want = norm(execPath);
+        NSString *suffix = [@"/" stringByAppendingString:[[execPath.stringByDeletingLastPathComponent lastPathComponent] stringByAppendingPathComponent:execPath.lastPathComponent]];
+        int fallback = -1;
         for (uint32_t i = 0; i < _dyld_image_count(); i++) {
             const char *iname = _dyld_get_image_name(i);
-            if (iname && strstr(iname, needle.UTF8String)) {
+            if (!iname) continue;
+            NSString *in = @(iname);
+            if (fallback < 0 && [in hasSuffix:suffix]) fallback = i;
+            if ([norm(in) isEqualToString:want] || (i == (uint32_t)_dyld_image_count() - 1 && fallback >= 0 && (i = fallback, 1))) {
                 hdr = (const struct mach_header_64 *)_dyld_get_image_header(i); gGuestHdr = (const void *)hdr;
                 LCTVLog(@"image[%u]=%s filetype=%u", i, iname, hdr ? hdr->filetype : 0);
                 break;
             }
         }
-        if (!hdr) { LCTVLog(@"ABORT no header"); return -1; }
+        if (!hdr) { LCTVFail([NSString stringWithFormat:@"guest image not found among loaded images (%@)", want]); return -1; }
+        if (hdr->filetype != MH_DYLIB && hdr->filetype != MH_EXECUTE) LCTVLog(@"WARNING image filetype %u", hdr->filetype);
         struct load_command *lc = (void *)(hdr + 1);
         uint64_t entryoff = 0, textFileoff = 0; BOOL hasId = NO;
         for (uint32_t i = 0; i < hdr->ncmds; i++, lc = (void *)lc + lc->cmdsize) {
@@ -164,8 +202,7 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
                 textFileoff = ((struct segment_command_64 *)lc)->fileoff;
         }
         LCTVLog(@"LC_MAIN=0x%llx textFileoff=0x%llx LC_ID_DYLIB=%d", entryoff, textFileoff, hasId);
-        if (!entryoff) { LCTVLog(@"ABORT no LC_MAIN"); return -1; }
-        method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
+        if (!entryoff) { LCTVFail(@"no LC_MAIN in guest image"); return -1; }
         int (*guestMain)(int, char **, char **) = (void *)((uint8_t *)hdr + (entryoff - textFileoff));
         T(@"resolve main");
         flushTimings(label);
@@ -173,7 +210,7 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         extern char **environ;
         return guestMain(argc, argv, environ);
     } @catch (NSException *ex) {
-        LCTVLog(@"EXCEPTION %@ %@", ex.name, ex.reason);
+        LCTVFail([NSString stringWithFormat:@"exception %@: %@", ex.name, ex.reason]);
         return -1;
     }
 }
@@ -258,10 +295,13 @@ static NSString *consumePendingIfFresh(void) {
     NSString *launchErr = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastLaunchError"];
     if (launchErr.length) {
         [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LCTVLastLaunchError"];
+        [NSUserDefaults.standardUserDefaults setObject:launchErr forKey:@"LCTVLastLaunchErrorCopy"];
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *shortMsg = launchErr.length > 1500 ? [launchErr substringFromIndex:launchErr.length - 1500] : launchErr;
+            NSString *shortMsg = launchErr.length > 900 ? [[launchErr substringToIndex:900] stringByAppendingString:@"…"] : launchErr; // reason is first
             UIAlertController *al = [UIAlertController alertControllerWithTitle:@"Guest launch failed" message:shortMsg preferredStyle:UIAlertControllerStyleAlert];
-            [al addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [al addAction:[UIAlertAction actionWithTitle:@"Show details" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                [(UINavigationController *)self.window.rootViewController pushViewController:[LCTVDiagController new] animated:YES]; }]];
+            [al addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
             [self.window.rootViewController presentViewController:al animated:YES completion:nil];
         });
     }
@@ -285,7 +325,7 @@ int main(int argc, char *argv[]) {
                 NSString *bid = [sel substringFromIndex:7];
                 LCTVImportedApp *app = [LCTVAppManager.shared appForBundleIdFast:bid];
                 T(@"lookup");
-                if (!app) LCTVLog(@"ABORT imported app not found %@", bid);
+                if (!app) LCTVFail([NSString stringWithFormat:@"imported app not found: %@", bid]);
                 else {
                     // Fast path: host already patched+fixed+signed this exact exe (manifest) -> straight to dlopen.
                     if (![LCTVAppManager.shared isPreparedFast:app]) {
@@ -303,7 +343,12 @@ int main(int argc, char *argv[]) {
             }
             if (r != -1) return r;
             flushTimings(@"failed");
-            NSString *err = LCTVReadLogTail(8000);
+            NSMutableString *err = [NSMutableString new];
+            [err appendFormat:@"REASON: %@\n", gFailReasons.count ? [gFailReasons componentsJoinedByString:@"\n"] : @"(unknown — see Diagnostics)"];
+            if (gPreloadSummary) [err appendFormat:@"%@\n", gPreloadSummary];
+            NSArray *lines = [LCTVReadLogTail(6000) componentsSeparatedByString:@"\n"];
+            NSArray *tail = [lines subarrayWithRange:NSMakeRange(lines.count > 10 ? lines.count - 10 : 0, MIN(lines.count, 10))];
+            [err appendFormat:@"\n— last log lines —\n%@", [tail componentsJoinedByString:@"\n"]];
             [NSUserDefaults.standardUserDefaults setObject:err forKey:@"LCTVLastLaunchError"];
             LCTVLog(@"launch failed; showing host UI");
         }
