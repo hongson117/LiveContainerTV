@@ -1,4 +1,8 @@
 #import <Foundation/Foundation.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, LCTVCertState) {
     LCTVCertStateNoP12,        // nothing uploaded yet
@@ -24,3 +28,7 @@ typedef NS_ENUM(NSInteger, LCTVCertState) {
 - (void)evaluate;
 @end
 NS_ASSUME_NONNULL_END
+
+#ifdef __cplusplus
+}
+#endif

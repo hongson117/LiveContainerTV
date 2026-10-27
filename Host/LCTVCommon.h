@@ -1,6 +1,10 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 NS_ASSUME_NONNULL_BEGIN
 void LCTVLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
 NSString *LCTVCachesDir(void);
@@ -14,3 +18,7 @@ extern NSString *const LCTVStateChangedNotification;
 NSString *LCTVCertPassPath(void);
 NSString *LCTVReadLogTail(NSUInteger maxLen);
 NS_ASSUME_NONNULL_END
+
+#ifdef __cplusplus
+}
+#endif

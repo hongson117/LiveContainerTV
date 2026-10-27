@@ -1,5 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 NS_ASSUME_NONNULL_BEGIN
 @interface LCTVImportedApp : NSObject
 @property NSString *bundleId;
@@ -36,3 +40,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (UIImage *)letterTileFor:(NSString *)name size:(CGSize)size;
 @end
 NS_ASSUME_NONNULL_END
+
+#ifdef __cplusplus
+}
+#endif
