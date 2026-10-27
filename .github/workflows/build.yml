@@ -86,6 +86,10 @@ jobs:
           sleep 10
           xcrun simctl io "$DEV" screenshot shots/focus_diag.png
           grep FOCUSTEST shots/focus.log || true
+          xcrun simctl terminate "$DEV" com.hongson117.livecontainertv || true
+          xcrun simctl launch "$DEV" com.hongson117.livecontainertv -LCTVShowGuide YES
+          sleep 8
+          xcrun simctl io "$DEV" screenshot shots/guide.png
           ls -l shots
 
       - uses: actions/upload-artifact@v4

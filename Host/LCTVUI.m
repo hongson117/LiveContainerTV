@@ -1,3 +1,4 @@
+#import <CoreImage/CoreImage.h>
 #import "LCTVUI.h"
 #import "LCTVCommon.h"
 #import "LCTVAppManager.h"
@@ -129,6 +130,105 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
 
 #pragma mark - Home
 
+
+#pragma mark - Guide
+static NSString *guideText(BOOL vi, NSString *url) {
+    if (vi) return [NSString stringWithFormat:
+    @"LiveContainerTV chạy nhiều app tvOS bên trong một app đã sideload (chỉ cần 1 Apple ID miễn phí).\n\n"
+    "1) Xuất chứng chỉ .p12 (trên PC Windows có atvloadly)\n"
+    "   Mở PowerShell trong C:\\Program Files\\atvloadly rồi chạy:\n"
+    "   .\\plumesign.exe certificate export -u <email> -p <mật khẩu> -o \"$env:USERPROFILE\\Desktop\\certificate.p12\"\n\n"
+    "2) Trên máy tính/điện thoại cùng mạng Wi-Fi, mở:\n   %@\n   (hoặc quét mã QR bên phải)\n\n"
+    "3) Tải lên certificate.p12 kèm mật khẩu (nếu có). Chip trên đầu chuyển sang “Cert OK”.\n\n"
+    "4) Tải lên file .ipa dành cho tvOS (KHÔNG dùng IPA iPhone/iPad).\n\n"
+    "5) Chọn app trên màn hình chính → Launch. Lần đầu hiện “Preparing…” (ký 1 lần). Ứng dụng sẽ đóng — mở lại LiveContainerTV trong 90 giây, app sẽ chạy ngay.\n\n"
+    "6) Bấm Menu trong app để quay về danh sách.\n\n"
+    "7) Cứ 7 ngày atvloadly tự làm mới chứng chỉ. Nếu khóa không đổi, LiveContainerTV tự ký lại tất cả app. Nếu hiện băng đỏ “Certificate changed”, xuất .p12 mới (bước 1) và tải lên lại.\n\n"
+    "Xử lý lỗi\n"
+    "• -80045 khi cài: cập nhật atvloadly bản mới nhất.\n"
+    "• “Info.plist not found”: IPA sai/không phải tvOS — tải IPA tvOS khác.\n"
+    "• “Library not loaded”: bấm Re-sign app đó, hoặc tải lại IPA.\n"
+    "• Ô “Re-import”: tvOS đã xoá dữ liệu để giải phóng bộ nhớ — tải lại IPA.\n"
+    "• ERR_EMPTY_RESPONSE trên web: mở LiveContainerTV ở màn hình chính (web chỉ chạy khi đang ở danh sách), cùng Wi-Fi, thử lại.\n"
+    "• Chi tiết kỹ thuật: nút Diagnostics.", url];
+    return [NSString stringWithFormat:
+    @"LiveContainerTV runs several tvOS apps inside one sideloaded app (a free Apple ID is enough).\n\n"
+    "1) Export your .p12 (on the Windows PC with atvloadly)\n"
+    "   Open PowerShell in C:\\Program Files\\atvloadly and run:\n"
+    "   .\\plumesign.exe certificate export -u <email> -p <password> -o \"$env:USERPROFILE\\Desktop\\certificate.p12\"\n\n"
+    "2) On a computer/phone on the same Wi-Fi open:\n   %@\n   (or scan the QR code)\n\n"
+    "3) Upload certificate.p12 with its password. The header chip turns “Cert OK”.\n\n"
+    "4) Upload a tvOS .ipa (NOT an iPhone/iPad IPA).\n\n"
+    "5) Pick the app → Launch. The first time shows “Preparing…” (one-time signing). The app closes — reopen LiveContainerTV within 90 s and it starts right away.\n\n"
+    "6) Press Menu inside the app to return to the list.\n\n"
+    "7) atvloadly refreshes the certificate every 7 days. If the key is unchanged, all apps are re-signed automatically. If a red “Certificate changed” banner appears, export a new .p12 (step 1) and upload it.\n\n"
+    "Troubleshooting\n"
+    "• -80045 while installing: update atvloadly.\n"
+    "• “Info.plist not found”: wrong / non-tvOS IPA.\n"
+    "• “Library not loaded”: Re-sign that app or upload the IPA again.\n"
+    "• “Re-import” tile: tvOS purged its files — upload the IPA again.\n"
+    "• ERR_EMPTY_RESPONSE on the web page: keep LiveContainerTV open on its home screen, same Wi-Fi, retry.\n"
+    "• Technical details: Diagnostics.", url];
+}
+static UIImage *qrImage(NSString *str, CGFloat side) {
+    CIFilter *f = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    [f setValue:[str dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
+    [f setValue:@"M" forKey:@"inputCorrectionLevel"];
+    CIImage *ci = f.outputImage; if (!ci) return nil;
+    CGFloat sc = side / ci.extent.size.width;
+    ci = [ci imageByApplyingTransform:CGAffineTransformMakeScale(sc, sc)];
+    CGImageRef cg = [[CIContext context] createCGImage:ci fromRect:ci.extent];
+    UIImage *img = [UIImage imageWithCGImage:cg]; CGImageRelease(cg);
+    return img;
+}
+@interface LCTVGuideController : UIViewController
+@end
+@implementation LCTVGuideController { UITextView *_tv; UIButton *_lang; UIImageView *_qr; UILabel *_url; BOOL _vi; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    _vi = ![NSUserDefaults.standardUserDefaults boolForKey:@"LCTVGuideEnglish"];
+    self.view.backgroundColor = rgb(10, 14, 32);
+    _lang = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_lang addTarget:self action:@selector(toggle) forControlEvents:UIControlEventPrimaryActionTriggered];
+    UIButton *done = [UIButton buttonWithType:UIButtonTypeSystem];
+    [done setTitle:@"OK" forState:UIControlStateNormal];
+    [done addTarget:self action:@selector(close) forControlEvents:UIControlEventPrimaryActionTriggered];
+    UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[_lang, done]]; btns.spacing = 30;
+    _tv = [UITextView new];
+    _tv.font = [UIFont systemFontOfSize:28]; _tv.textColor = UIColor.whiteColor; _tv.backgroundColor = rgb(17, 24, 39);
+    _tv.selectable = YES; _tv.scrollEnabled = YES; _tv.layer.cornerRadius = 16;
+    _tv.textContainerInset = UIEdgeInsetsMake(24, 24, 24, 24);
+    _tv.panGestureRecognizer.allowedTouchTypes = @[@(UITouchTypeIndirect)];
+    _qr = [UIImageView new]; _qr.layer.magnificationFilter = kCAFilterNearest;
+    _qr.backgroundColor = UIColor.whiteColor; _qr.layer.cornerRadius = 12; _qr.clipsToBounds = YES;
+    _url = [UILabel new]; _url.font = [UIFont boldSystemFontOfSize:30]; _url.textColor = rgb(253, 224, 71);
+    _url.textAlignment = NSTextAlignmentCenter; _url.numberOfLines = 2;
+    for (UIView *v in @[btns, _tv, _qr, _url]) { v.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:v]; }
+    UILayoutGuide *g = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [btns.topAnchor constraintEqualToAnchor:g.topAnchor], [btns.leadingAnchor constraintEqualToAnchor:g.leadingAnchor],
+        [_tv.topAnchor constraintEqualToAnchor:btns.bottomAnchor constant:30], [_tv.leadingAnchor constraintEqualToAnchor:g.leadingAnchor],
+        [_tv.bottomAnchor constraintEqualToAnchor:g.bottomAnchor], [_tv.trailingAnchor constraintEqualToAnchor:_qr.leadingAnchor constant:-50],
+        [_qr.trailingAnchor constraintEqualToAnchor:g.trailingAnchor], [_qr.topAnchor constraintEqualToAnchor:_tv.topAnchor],
+        [_qr.widthAnchor constraintEqualToConstant:420], [_qr.heightAnchor constraintEqualToConstant:420],
+        [_url.topAnchor constraintEqualToAnchor:_qr.bottomAnchor constant:20], [_url.centerXAnchor constraintEqualToAnchor:_qr.centerXAnchor],
+        [_url.widthAnchor constraintEqualToConstant:520],
+    ]];
+    [self render];
+}
+- (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments { return @[_tv]; }
+- (void)render {
+    NSString *url = LCTVHTTPServer.shared.lanURL ?: @"http://<Apple-TV-IP>:8228";
+    self.title = _vi ? @"Hướng dẫn" : @"Guide";
+    [_lang setTitle:_vi ? @"English" : @"Tiếng Việt" forState:UIControlStateNormal];
+    _tv.text = guideText(_vi, url);
+    _qr.image = qrImage(url, 420);
+    _url.text = url;
+}
+- (void)toggle { _vi = !_vi; [NSUserDefaults.standardUserDefaults setBool:!_vi forKey:@"LCTVGuideEnglish"]; [self render]; }
+- (void)close { [self.navigationController popViewControllerAnimated:YES]; }
+@end
+
 @interface LCTVHomeController () <UICollectionViewDataSource, UICollectionViewDelegate>
 @property UICollectionView *cv;
 @property NSArray<LCTVTile *> *tiles;
@@ -172,7 +272,10 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
     UIButton *refresh = [UIButton buttonWithType:UIButtonTypeSystem];
     [refresh setTitle:@"Refresh" forState:UIControlStateNormal];
     [refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
-    UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[refresh, diag]];
+    UIButton *guide = [UIButton buttonWithType:UIButtonTypeSystem];
+    [guide setTitle:@"Hướng dẫn / Guide" forState:UIControlStateNormal];
+    [guide addTarget:self action:@selector(openGuide) forControlEvents:UIControlEventPrimaryActionTriggered];
+    UIStackView *btns = [[UIStackView alloc] initWithArrangedSubviews:@[guide, refresh, diag]];
     btns.spacing = 24;
     _refreshBtn = refresh; _diagBtn = diag;
 
@@ -259,6 +362,19 @@ static void setChip(UILabel *l, NSString *text, UIColor *bg) {
 }
 
 - (void)refreshTapped { [LCTVCert.shared evaluateAndResignAsync:NO]; [self reload]; }
+- (void)openGuide { [self.navigationController pushViewController:[LCTVGuideController new] animated:YES]; }
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    static BOOL shown;
+    NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+    if (!shown && [ud boolForKey:@"LCTVShowGuide"]) { shown = YES; [self openGuide]; return; }
+    if (shown || [ud boolForKey:@"LCTVScreenshotDemo"] || [ud boolForKey:@"LCTVFocusTest"]) return;
+    BOOL first = ![ud boolForKey:@"LCTVGuideSeen"];
+    if (first || LCTVCert.shared.state == LCTVCertStateNoP12) {
+        shown = YES; [ud setBool:YES forKey:@"LCTVGuideSeen"];
+        [self openGuide];
+    }
+}
 - (void)openDiag { [self.navigationController pushViewController:[LCTVDiagController new] animated:YES]; }
 
 - (void)reload {
