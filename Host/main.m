@@ -8,6 +8,8 @@
 #import "LCTVCommon.h"
 #import "LCTVHTTPServer.h"
 #import "LCTVAppManager.h"
+#import "LCTVUI.h"
+#import "LCTVCert.h"
 
 static NSString *gGuestBundlePath;
 
@@ -130,133 +132,6 @@ static NSString *consumePendingIfFresh(void) {
     return token;
 }
 
-@interface LCTVListController : UITableViewController
-@property NSArray *builtinGuests;
-@property NSArray<LCTVImportedApp *> *imported;
-@property NSString *diagText;
-@property NSString *serverURL;
-@end
-
-@implementation LCTVListController
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"LiveContainerTV";
-    [self.tableView registerClass:UITableViewCell.class forCellReuseIdentifier:@"c"];
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 80;
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Reload" style:UIBarButtonItemStylePlain target:self action:@selector(reload)];
-    // Ensure no leftover pending while sitting on host UI
-    clearPending();
-    [self reload];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
-}
-- (void)reload {
-    NSMutableArray *g = [NSMutableArray new];
-    NSString *dir = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Frameworks"];
-    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
-        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/%@/Info.plist", dir, f]];
-        if ([info[@"LCTVGuest"] boolValue]) [g addObject:f.stringByDeletingPathExtension];
-    }
-    self.builtinGuests = g;
-    self.imported = LCTVAppManager.shared.importedApps;
-    self.serverURL = LCTVHTTPServer.shared.lanURL;
-    self.diagText = LCTVReadLogTail(4000);
-    [self.tableView reloadData];
-}
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 4; }
-- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
-    switch (s) {
-        case 0: return @"Import (web upload)";
-        case 1: return @"Built-in demo";
-        case 2: return @"Imported apps";
-        default: return @"Diagnostics";
-    }
-}
-- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
-    if (s == 0) return 1;
-    if (s == 1) return self.builtinGuests.count ?: 1;
-    if (s == 2) return self.imported.count ?: 1;
-    return 1;
-}
-- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
-    UITableViewCell *c = [t dequeueReusableCellWithIdentifier:@"c" forIndexPath:ip];
-    c.textLabel.numberOfLines = 0;
-    c.textLabel.font = [UIFont monospacedSystemFontOfSize:22 weight:UIFontWeightRegular];
-    c.selectionStyle = UITableViewCellSelectionStyleDefault;
-    if (ip.section == 0) {
-        BOOL cert = LCTVAppManager.shared.hasCertificate;
-        c.textLabel.text = [NSString stringWithFormat:
-            @"Open on your PC/phone:\n%@\n\nCertificate: %@\n"
-            @"Export: plumesign certificate export -u … -p PASS -o cert.p12\n"
-            @"1) Upload .p12 (password REQUIRED)\n2) Upload tvOS .ipa\n3) Reload → Launch → reopen",
-            self.serverURL ?: @"starting…", cert ? @"loaded" : @"MISSING"];
-        c.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if (ip.section == 1) {
-        c.textLabel.text = self.builtinGuests.count ? self.builtinGuests[ip.row] : @"(none)";
-        if (!self.builtinGuests.count) c.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if (ip.section == 2) {
-        if (!self.imported.count) { c.textLabel.text = @"(none — use web upload)"; c.selectionStyle = UITableViewCellSelectionStyleNone; }
-        else {
-            LCTVImportedApp *a = self.imported[ip.row];
-            c.textLabel.text = [NSString stringWithFormat:@"%@\n%@  patched=%@ signed=%@",
-                                a.name, a.bundleId, a.patched?@"Y":@"N", a.signedOK?@"Y":@"N"];
-        }
-    } else {
-        c.textLabel.text = self.diagText;
-        c.selectionStyle = UITableViewCellSelectionStyleNone;
-    }
-    return c;
-}
-- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    [t deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == 1 && self.builtinGuests.count) {
-        [self scheduleLaunch:[NSString stringWithFormat:@"builtin:%@", self.builtinGuests[ip.row]] title:self.builtinGuests[ip.row]];
-    } else if (ip.section == 2 && self.imported.count) {
-        LCTVImportedApp *a = self.imported[ip.row];
-        UIAlertController *sheet = [UIAlertController alertControllerWithTitle:a.name message:a.bundleId preferredStyle:UIAlertControllerStyleAlert];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Launch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-            [self scheduleLaunch:[NSString stringWithFormat:@"import:%@", a.bundleId] title:a.name];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Re-sign" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-            NSString *e = [LCTVAppManager.shared prepareAppForLaunch:a];
-            UIAlertController *r = [UIAlertController alertControllerWithTitle:e?@"Re-sign failed":@"Re-signed" message:e?:@"OK" preferredStyle:UIAlertControllerStyleAlert];
-            [r addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [self presentViewController:r animated:YES completion:nil];
-            [self reload];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
-            [LCTVAppManager.shared deleteApp:a.bundleId error:nil];
-            [self reload];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:sheet animated:YES completion:nil];
-    }
-}
-- (void)scheduleLaunch:(NSString *)token title:(NSString *)title {
-    // Do NOT write pending until the user confirms OK — otherwise a crash leaves a sticky GuestDemo flag.
-    NSString *msg = [NSString stringWithFormat:
-                     @"LiveContainerTV will close. Open it again within 90 seconds to start %@.\n\n"
-                     @"From a guest: Menu or “Return to host”. Crash / later relaunch opens the host list.",
-                     title];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Launch" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK — close & relaunch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-        NSString *payload = [NSString stringWithFormat:@"%@\n%.0f", token, [[NSDate date] timeIntervalSince1970]];
-        NSError *err = nil;
-        BOOL ok = [payload writeToFile:LCTVPendingPath() atomically:YES encoding:NSUTF8StringEncoding error:&err];
-        // Also clear force-host so this intentional launch wins
-        [[NSFileManager defaultManager] removeItemAtPath:LCTVForceHostPath() error:nil];
-        [NSUserDefaults.standardUserDefaults setObject:token forKey:@"LCTVSelectedGuest"];
-        [NSUserDefaults.standardUserDefaults synchronize];
-        LCTVLog(@"wrote pending=%@ ok=%d err=%@", payload, ok, err);
-        fflush(NULL);
-        usleep(200000);
-        exit(0);
-    }]];
-    [self presentViewController:a animated:YES completion:nil];
-}
-@end
-
 @interface LCTVAppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
 @end
@@ -266,7 +141,9 @@ static NSString *consumePendingIfFresh(void) {
     if (![LCTVHTTPServer.shared start:&err]) LCTVLog(@"HTTP start failed: %@", err);
     clearPending(); // belt-and-suspenders while host UI is up
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[LCTVListController new]];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[LCTVHomeController new]];
+    // Boot-time certificate check: detect atvloadly cert refresh, reuse key if possible, re-sign stale guests.
+    [LCTVCert.shared evaluateAndResignAsync:NO];
     [self.window makeKeyAndVisible];
     NSString *launchErr = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVLastLaunchError"];
     if (launchErr.length) {

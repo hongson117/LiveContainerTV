@@ -1,4 +1,5 @@
 #import "LCTVCommon.h"
+NSString *const LCTVStateChangedNotification = @"LCTVStateChanged";
 
 NSString *LCTVCachesDir(void) {
     NSString *c = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
@@ -12,8 +13,26 @@ NSString *LCTVAppsDir(void) {
 }
 NSString *LCTVLogPath(void) { return [LCTVCachesDir() stringByAppendingPathComponent:@"lctv_diag.log"]; }
 NSString *LCTVPendingPath(void) { return [LCTVCachesDir() stringByAppendingPathComponent:@"lctv_pending_guest.txt"]; }
-NSString *LCTVCertPath(void) { return [LCTVCachesDir() stringByAppendingPathComponent:@"cert.p12"]; }
-NSString *LCTVCertPassPath(void) { return [LCTVCachesDir() stringByAppendingPathComponent:@"cert.pass"]; }
+NSString *LCTVDataDir(void) {
+    // Application Support is NOT purged by tvOS (unlike Caches) — keep cert, icons, registry here.
+    NSString *d = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"LCTV"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    static dispatch_once_t o; dispatch_once(&o, ^{
+        for (NSString *f in @[@"cert.p12", @"cert.pass"]) {
+            NSString *old = [LCTVCachesDir() stringByAppendingPathComponent:f], *nw = [d stringByAppendingPathComponent:f];
+            if ([fm fileExistsAtPath:old] && ![fm fileExistsAtPath:nw]) [fm moveItemAtPath:old toPath:nw error:nil];
+        }
+    });
+    return d;
+}
+NSString *LCTVIconsDir(void) {
+    NSString *d = [LCTVDataDir() stringByAppendingPathComponent:@"Icons"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    return d;
+}
+NSString *LCTVCertPath(void) { return [LCTVDataDir() stringByAppendingPathComponent:@"cert.p12"]; }
+NSString *LCTVCertPassPath(void) { return [LCTVDataDir() stringByAppendingPathComponent:@"cert.pass"]; }
 
 void LCTVLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);

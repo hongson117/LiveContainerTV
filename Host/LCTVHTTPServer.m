@@ -2,6 +2,7 @@
 #import "LCTVCommon.h"
 #import "LCTVAppManager.h"
 #import "zsigner.h"
+#import "LCTVCert.h"
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
@@ -127,42 +128,58 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
     send(fd, msg, strlen(msg), 0);
 }
 
+- (NSString *)esc:(NSString *)s {
+    s = s ?: @"";
+    for (NSArray *r in @[@[@"&", @"&amp;"], @[@"<", @"&lt;"], @[@">", @"&gt;"], @[@"\"", @"&quot;"]]) s = [s stringByReplacingOccurrencesOfString:r[0] withString:r[1]];
+    return s;
+}
 - (NSString *)htmlPage {
+    LCTVCert *c = LCTVCert.shared;
+    [c evaluate];
     NSMutableString *apps = [NSMutableString new];
     for (LCTVImportedApp *a in LCTVAppManager.shared.importedApps) {
-        [apps appendFormat:@"<li><b>%@</b> (%@) patched=%@ signed=%@</li>",
-         a.name ?: @"?", a.bundleId ?: @"?", a.patched ? @"yes" : @"no", a.signedOK ? @"yes" : @"no"];
+        NSString *st = a.purged ? @"<span class=bad>needs re-import</span>"
+                     : (!a.signedOK ? @"<span class=bad>not signed</span>"
+                     : ((c.p12Fingerprint && ![a.signedFingerprint isEqual:c.p12Fingerprint]) ? @"<span class=warn>re-sign pending</span>" : @"<span class=ok>ready</span>"));
+        NSString *bid = [a.bundleId stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet];
+        [apps appendFormat:@"<div class=tile><img src=\"/icon/%@.png\" loading=lazy><b>%@</b><small>%@ %@</small>%@</div>",
+         bid, [self esc:a.shortName], [self esc:a.bundleId], [self esc:a.version], st];
     }
-    if (!apps.length) [apps appendString:@"<li><i>none yet</i></li>"];
-    BOOL hasCert = LCTVAppManager.shared.hasCertificate;
+    if (!apps.length) [apps appendString:@"<p><i>No apps yet — upload a tvOS .ipa below.</i></p>"];
+    BOOL okState = c.state == LCTVCertStateOK || c.state == LCTVCertStateUnknownHost;
+    NSString *banner = c.state == LCTVCertStateChanged
+        ? @"<div class=banner>Certificate changed (atvloadly refreshed). Upload the new .p12 below — all apps re-sign automatically.</div>" : @"";
+    NSString *busy = c.busy ? [NSString stringWithFormat:@"<div class=chip style=background:#4f46e5>%@</div>", [self esc:c.busyText.length ? c.busyText : @"Working…"]] : @"";
     return [NSString stringWithFormat:
      @"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">"
-     @"<title>LiveContainerTV</title>"
-     @"<style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem;background:#0f172a;color:#e2e8f0}"
-     @"h1{color:#fbbf24} a{color:#2dd4bf} .card{background:#1e293b;padding:1rem;border-radius:12px;margin:1rem 0}"
-     @"input,button{font-size:1rem;padding:.5rem;margin:.25rem 0} button{background:#d4af37;border:0;border-radius:8px;cursor:pointer}"
-     @".ok{color:#2dd4bf}.bad{color:#f87171} code{background:#334155;padding:2px 6px;border-radius:4px}</style></head><body>"
-     @"<h1>LiveContainerTV</h1>"
-     @"<p>Upload a <b>tvOS</b> .ipa and your signing <b>.p12</b>.</p>"
-     @"<div class=card><h3>Certificate %@</h3>"
-     @"<p>Export on Windows (password is <b>required</b>):</p>"
+     @"<title>LiveContainerTV</title><link rel=icon href=/logo.png>"
+     @"<style>body{font-family:system-ui,-apple-system;max-width:900px;margin:0 auto;padding:1.5rem;background:linear-gradient(135deg,#0f0e34,#071e46);color:#e2e8f0;min-height:100vh}"
+     @"header{display:flex;align-items:center;gap:1rem;flex-wrap:wrap} header img{width:72px;height:72px} h1{margin:0;font-size:2rem} h1 span{color:#f59e0b}"
+     @".chips{display:flex;gap:.5rem;flex-wrap:wrap;margin-left:auto}.chip{padding:.35rem .8rem;border-radius:999px;font-weight:600;font-size:.9rem}"
+     @".card{background:rgba(30,41,59,.85);padding:1.2rem;border-radius:16px;margin:1rem 0} h3{margin-top:0}"
+     @".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:1rem}"
+     @".tile{background:#0b1222;border-radius:14px;padding:.6rem;display:flex;flex-direction:column;gap:.25rem}"
+     @".tile img{width:100%%;aspect-ratio:5/3;object-fit:cover;border-radius:10px;background:#111}.tile small{color:#94a3b8;word-break:break-all}"
+     @"input,button{font-size:1rem;padding:.55rem;margin:.25rem 0;border-radius:8px;border:1px solid #334155;background:#0b1222;color:#e2e8f0}"
+     @"button{background:#f59e0b;color:#1c1000;border:0;font-weight:700;cursor:pointer}"
+     @".ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24} pre{white-space:pre-wrap;background:#0b1222;padding:.6rem;border-radius:8px}"
+     @".banner{background:#dc2626;padding:1rem;border-radius:12px;font-weight:700;margin:1rem 0} a{color:#2dd4bf}</style></head><body>"
+     @"<header><img src=/logo.png alt=logo><h1>LiveContainer<span>TV</span></h1>"
+     @"<div class=chips><div class=chip style=background:%@>%@</div>%@</div></header>%@"
+     @"<div class=card><h3>Apps</h3><div class=grid>%@</div></div>"
+     @"<div class=card><h3>Upload tvOS .ipa</h3>"
+     @"<form method=POST action=/upload-ipa enctype=multipart/form-data><input type=file name=file accept=.ipa required> <button type=submit>Upload</button></form>"
+     @"<form method=POST action=/fetch-url>Or URL: <input name=url type=url style=\"width:60%%\" placeholder=https://example.com/app.ipa> <button type=submit>Download</button></form></div>"
+     @"<div class=card><h3>Signing certificate (.p12)</h3>"
      @"<pre>plumesign certificate export -u you@appleid.com -p YOURPASS -o certificate.p12</pre>"
      @"<form method=POST action=/upload-p12 enctype=multipart/form-data>"
-     @"<input type=file name=file accept=.p12,application/x-pkcs12 required><br>"
-     @"P12 password: <input type=password name=password required placeholder=\"same as -p\"><br>"
-     @"<button type=submit>Upload .p12</button></form></div>"
-     @"<div class=card><h3>Upload IPA</h3>"
-     @"<form method=POST action=/upload-ipa enctype=multipart/form-data>"
-     @"<input type=file name=file accept=.ipa required><br>"
-     @"<button type=submit>Upload .ipa</button></form>"
-     @"<form method=POST action=/fetch-url style=margin-top:1rem>"
-     @"Or IPA URL: <input name=url type=url style=\"width:70%%\" placeholder=https://example.com/app.ipa> "
-     @"<button type=submit>Download</button></form></div>"
-     @"<div class=card><h3>Imported apps</h3><ul>%@</ul>"
-     @"<p>On the Apple TV: Reload → select app → Launch → reopen LiveContainerTV.</p></div>"
-     @"<p><a href=/status>status JSON</a> · port %u · <a href=/diag>diag log</a></p></body></html>",
-     hasCert ? @"<span class=ok>loaded</span>" : @"<span class=bad>missing</span>",
-     apps, (unsigned)kPort];
+     @"<input type=file name=file accept=.p12,application/x-pkcs12 required> "
+     @"<input type=password name=password required placeholder=\"p12 password\"> <button type=submit>Upload .p12</button></form>"
+     @"<small>Host cert %@ · p12 cert %@</small></div>"
+     @"<p><a href=/status>status JSON</a> · port %u · <a href=/diag>diagnostics log</a></p></body></html>",
+     okState ? @"#16a34a" : @"#dc2626", [self esc:c.summary], busy, banner, apps,
+     [self esc:c.hostFingerprint.length > 8 ? [c.hostFingerprint substringToIndex:8] : @"?"],
+     [self esc:c.p12Fingerprint.length > 8 ? [c.p12Fingerprint substringToIndex:8] : @"-"], (unsigned)kPort];
 }
 
 /// Read headers fully, handle 100-continue, then stream body to a temp file. Returns YES on success.
@@ -374,12 +391,29 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
             [self sendResponse:fd status:200 contentType:@"text/html; charset=utf-8" body:[[self htmlPage] dataUsingEncoding:NSUTF8StringEncoding]];
             return;
         }
+        if ([method isEqual:@"GET"] && [path isEqual:@"/logo.png"]) {
+            NSData *d = [NSData dataWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"lctv_logo" ofType:@"png"]];
+            [self sendResponse:fd status:d ? 200 : 404 contentType:@"image/png" body:d];
+            return;
+        }
+        if ([method isEqual:@"GET"] && [path hasPrefix:@"/icon/"]) {
+            NSString *bid = [[[path substringFromIndex:6] stringByRemovingPercentEncoding] stringByDeletingPathExtension];
+            __block NSData *d = nil;
+            NSString *ip = [LCTVAppManager.shared iconPathForBundleId:bid];
+            if (ip) d = [NSData dataWithContentsOfFile:ip];
+            if (!d) dispatch_sync(dispatch_get_main_queue(), ^{
+                d = UIImagePNGRepresentation([LCTVAppManager letterTileFor:bid size:CGSizeMake(400, 240)]);
+            });
+            [self sendResponse:fd status:200 contentType:@"image/png" body:d];
+            return;
+        }
         if ([method isEqual:@"GET"] && [path hasPrefix:@"/status"]) {
             NSMutableArray *apps = [NSMutableArray new];
             for (LCTVImportedApp *a in LCTVAppManager.shared.importedApps) {
-                [apps addObject:@{@"name": a.name ?: @"", @"bundleId": a.bundleId ?: @"", @"patched": @(a.patched), @"signed": @(a.signedOK)}];
+                [apps addObject:@{@"name": a.name ?: @"", @"bundleId": a.bundleId ?: @"", @"patched": @(a.patched), @"signed": @(a.signedOK), @"purged": @(a.purged), @"signedFingerprint": a.signedFingerprint ?: @""}];
             }
-            NSDictionary *st = @{@"port": @(kPort), @"url": self.lanURL ?: @"", @"cert": @(LCTVAppManager.shared.hasCertificate), @"apps": apps};
+            NSDictionary *st = @{@"port": @(kPort), @"url": self.lanURL ?: @"", @"cert": @(LCTVAppManager.shared.hasCertificate), @"certState": @(LCTVCert.shared.state), @"certSummary": LCTVCert.shared.summary,
+                                 @"hostFingerprint": LCTVCert.shared.hostFingerprint ?: @"", @"p12Fingerprint": LCTVCert.shared.p12Fingerprint ?: @"", @"apps": apps};
             NSData *json = [NSJSONSerialization dataWithJSONObject:st options:NSJSONWritingPrettyPrinted error:nil] ?: [NSData data];
             [self sendResponse:fd status:200 contentType:@"application/json" body:json];
             return;
@@ -424,6 +458,19 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
                     LCTVLog(@"p12 validate exception %@", ex);
                 }
             }
+            if (ok) {
+                [LCTVCert.shared evaluate];
+                LCTVCertState cs = LCTVCert.shared.state;
+                if (cs == LCTVCertStateOK || cs == LCTVCertStateUnknownHost) {
+                    validateNote = [validateNote stringByAppendingString:@" Matches this Apple TV's signing certificate — re-signing all apps in the background."];
+                    [LCTVCert.shared evaluateAndResignAsync:NO];
+                } else if (cs == LCTVCertStateChanged) {
+                    validateNote = [validateNote stringByAppendingString:@" WARNING: this certificate does NOT match the one LiveContainerTV is currently signed with. Export the p12 from the same atvloadly/plumesign session."];
+                } else if (cs == LCTVCertStateBadP12) {
+                    validateNote = [validateNote stringByAppendingString:@" WARNING: could not open the p12 with that password."];
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{ [NSNotificationCenter.defaultCenter postNotificationName:LCTVStateChangedNotification object:nil]; });
+            }
             NSString *html = ok
                 ? [self htmlOk:[NSString stringWithFormat:@"Certificate saved (%@, %lu bytes).%@", fname, (unsigned long)file.length, validateNote]]
                 : [self htmlErr:err.localizedDescription ?: @"save failed"];
@@ -451,8 +498,9 @@ static const NSUInteger kStreamToDiskThreshold = 256ull * 1024ull;   // 256 KB
             file = nil; bodyData = nil;
             NSString *bid = [LCTVAppManager.shared importIPAAtPath:tmp error:&err];
             [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{ [NSNotificationCenter.defaultCenter postNotificationName:LCTVStateChangedNotification object:nil]; });
             NSString *html = bid
-                ? [self htmlOk:[NSString stringWithFormat:@"Imported <code>%@</code>. On the TV: Reload → Launch.", bid]]
+                ? [self htmlOk:[NSString stringWithFormat:@"Imported <code>%@</code>. It now appears on the TV home screen.", bid]]
                 : [self htmlErr:err.localizedDescription ?: @"import failed"];
             [self sendResponse:fd status:bid ? 200 : 500 contentType:@"text/html; charset=utf-8" body:[html dataUsingEncoding:NSUTF8StringEncoding]];
             return;

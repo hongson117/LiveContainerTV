@@ -64,7 +64,38 @@ jobs:
             echo "OK $f"
           done
 
+      - name: Verify logo + layers
+        run: |
+          set -e
+          unzip -l out/LiveContainerTV.ipa | grep -q "LiveContainerTV.app/lctv_logo.png" && echo "OK logo"
+          xcrun --sdk appletvos assetutil --info build/Release-appletvos/LiveContainerTV.app/Assets.car | grep -E '"Name"|Layer' | sort | uniq -c | head -30 || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: LiveContainerTV-ipa
           path: out/LiveContainerTV.ipa
+
+      - name: Simulator screenshot
+        continue-on-error: true
+        run: |
+          set -x
+          ls OpenSSL/Frameworks/OpenSSL.xcframework
+          xcodebuild build -project LiveContainerTV.xcodeproj -target LiveContainerTV -sdk appletvsimulator -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO SYMROOT=$PWD/simbuild 2>&1 | tail -30
+          APP=$(ls -d simbuild/Debug-appletvsimulator/LiveContainerTV.app)
+          DEV=$(xcrun simctl list devices available | grep -m1 "Apple TV" | grep -oE '[0-9A-F-]{36}')
+          [ -n "$DEV" ] || DEV=$(xcrun simctl create shot "Apple TV 4K (3rd generation)")
+          xcrun simctl boot "$DEV"; xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl install "$DEV" "$APP"
+          xcrun simctl launch "$DEV" com.hongson117.livecontainertv -LCTVScreenshotDemo YES
+          sleep 12
+          mkdir -p shots
+          xcrun simctl io "$DEV" screenshot shots/home.png
+          ls -l shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots/
+          if-no-files-found: ignore

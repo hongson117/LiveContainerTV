@@ -3,9 +3,18 @@
 #import "LCTVMachOPatch.h"
 #import <zlib.h>
 #import "../ZSign/zsigner.h"
+#import "LCTVCert.h"
 
 @implementation LCTVImportedApp
+- (NSString *)shortName {
+    NSString *n = self.name.length ? self.name : self.bundleId;
+    return n.length > 22 ? [[n substringToIndex:21] stringByAppendingString:@"…"] : n;
+}
 @end
+
+static NSCache *gIconMem;
+__attribute__((constructor)) static void initIconMem(void) { gIconMem = [NSCache new]; }
+static NSString *const kRegistry = @"LCTVKnownApps"; // bid -> {name, version}
 
 @implementation LCTVAppManager
 
@@ -29,9 +38,24 @@
             a.execPath = [app stringByAppendingPathComponent:execName];
             a.patched = [[NSUserDefaults standardUserDefaults] boolForKey:[@"patched." stringByAppendingString:a.bundleId]];
             a.signedOK = [[NSUserDefaults standardUserDefaults] boolForKey:[@"signed." stringByAppendingString:a.bundleId]];
+            a.signedFingerprint = [[NSUserDefaults standardUserDefaults] stringForKey:[@"signedFP." stringByAppendingString:a.bundleId]];
+            a.signedDate = [[NSUserDefaults standardUserDefaults] stringForKey:[@"signedAt." stringByAppendingString:a.bundleId]];
+            a.version = info[@"CFBundleShortVersionString"];
+            if (![fm fileExistsAtPath:a.execPath]) a.purged = YES;
             [out addObject:a];
         }
     }
+    // Apps we imported before whose folder tvOS purged from Caches
+    NSDictionary *reg = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry];
+    NSSet *present = [NSSet setWithArray:[out valueForKey:@"bundleId"]];
+    for (NSString *bid in reg) {
+        if ([present containsObject:bid]) continue;
+        LCTVImportedApp *a = [LCTVImportedApp new];
+        a.bundleId = bid; a.name = reg[bid][@"name"] ?: bid; a.version = reg[bid][@"version"];
+        a.purged = YES; a.appPath = @""; a.execPath = @"";
+        [out addObject:a];
+    }
+    [out sortUsingComparator:^NSComparisonResult(LCTVImportedApp *x, LCTVImportedApp *y) { return [x.name localizedCaseInsensitiveCompare:y.name]; }];
     return out;
 }
 
@@ -50,7 +74,9 @@
 - (BOOL)deleteApp:(NSString *)bundleId error:(NSError **)error {
     NSString *dir = [LCTVAppsDir() stringByAppendingPathComponent:bundleId];
     BOOL ok = [NSFileManager.defaultManager removeItemAtPath:dir error:error];
+    [self forgetApp:bundleId];
     LCTVLog(@"delete %@ ok=%d", bundleId, ok);
+    if (!ok) { ok = YES; if (error) *error = nil; } // purged entries have no folder
     return ok;
 }
 
@@ -163,6 +189,12 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
     app.execPath = [destApp stringByAppendingPathComponent:execName];
     app.name = info[@"CFBundleDisplayName"] ?: execName;
 
+    NSMutableDictionary *reg = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry] mutableCopy] ?: [NSMutableDictionary new];
+    reg[bid] = @{@"name": app.name ?: bid, @"version": info[@"CFBundleShortVersionString"] ?: @""};
+    [[NSUserDefaults standardUserDefaults] setObject:reg forKey:kRegistry];
+    [[NSFileManager defaultManager] removeItemAtPath:[self iconCachePath:bid] error:nil];
+    [gIconMem removeObjectForKey:bid];
+    if (NSThread.isMainThread) (void)[self iconForApp:app]; else dispatch_sync(dispatch_get_main_queue(), ^{ (void)[self iconForApp:app]; });
     NSString *prepErr = [self prepareAppForLaunch:app];
     if (prepErr) LCTVLog(@"prepare warning: %@", prepErr);
     LCTVLog(@"imported %@ -> %@", bid, destApp);
@@ -226,8 +258,103 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1]
         return signErr;
     }
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:[@"signed." stringByAppendingString:app.bundleId]];
+    [[LCTVCert shared] evaluate];
+    NSString *fp = [LCTVCert shared].p12Fingerprint;
+    if (fp) [[NSUserDefaults standardUserDefaults] setObject:fp forKey:[@"signedFP." stringByAppendingString:app.bundleId]];
+    [[NSUserDefaults standardUserDefaults] setObject:[NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle]
+                                              forKey:[@"signedAt." stringByAppendingString:app.bundleId]];
     LCTVLog(@"signed OK %@ (ZSign signs each Mach-O in place; no _CodeSignature folder is expected)", app.bundleId);
     return nil;
+}
+
+
+#pragma mark - Icons
+
+- (NSString *)iconCachePath:(NSString *)bid { return [LCTVIconsDir() stringByAppendingPathComponent:[bid stringByAppendingString:@".png"]]; }
+- (NSString *)iconPathForBundleId:(NSString *)bid {
+    NSString *p = [self iconCachePath:bid];
+    return [NSFileManager.defaultManager fileExistsAtPath:p] ? p : nil;
+}
+- (void)forgetApp:(NSString *)bid {
+    NSMutableDictionary *reg = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:kRegistry] mutableCopy];
+    [reg removeObjectForKey:bid];
+    [[NSUserDefaults standardUserDefaults] setObject:reg ?: @{} forKey:kRegistry];
+    for (NSString *k in @[@"signed.", @"signedFP.", @"signedAt.", @"patched."]) [[NSUserDefaults standardUserDefaults] removeObjectForKey:[k stringByAppendingString:bid]];
+    [NSFileManager.defaultManager removeItemAtPath:[self iconCachePath:bid] error:nil];
+    [gIconMem removeObjectForKey:bid];
+}
+
++ (UIImage *)letterTileFor:(NSString *)name size:(CGSize)size {
+    NSString *letter = name.length ? [[name substringToIndex:1] uppercaseString] : @"?";
+    NSUInteger h = name.hash;
+    UIColor *c1 = [UIColor colorWithHue:(h % 360) / 360.0 saturation:0.65 brightness:0.85 alpha:1];
+    UIColor *c2 = [UIColor colorWithHue:((h + 40) % 360) / 360.0 saturation:0.8 brightness:0.45 alpha:1];
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGGradientRef g = CGGradientCreateWithColors(cs, (__bridge CFArrayRef)@[(id)c1.CGColor, (id)c2.CGColor], NULL);
+        CGContextDrawLinearGradient(ctx.CGContext, g, CGPointZero, CGPointMake(size.width, size.height), 0);
+        CGGradientRelease(g); CGColorSpaceRelease(cs);
+        UIFont *f = [UIFont systemFontOfSize:size.height * 0.5 weight:UIFontWeightHeavy];
+        NSDictionary *at = @{NSFontAttributeName: f, NSForegroundColorAttributeName: UIColor.whiteColor};
+        CGSize ts = [letter sizeWithAttributes:at];
+        [letter drawAtPoint:CGPointMake((size.width - ts.width) / 2, (size.height - ts.height) / 2) withAttributes:at];
+    }];
+}
+
+static UIImage *fitTile(UIImage *img, CGSize size) {
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [UIColor.blackColor setFill]; UIRectFill(CGRectMake(0, 0, size.width, size.height));
+        CGFloat s = MAX(size.width / img.size.width, size.height / img.size.height);
+        CGSize d = CGSizeMake(img.size.width * s, img.size.height * s);
+        [img drawInRect:CGRectMake((size.width - d.width) / 2, (size.height - d.height) / 2, d.width, d.height)];
+    }];
+}
+
+- (UIImage *)extractIconFromBundle:(NSString *)appPath {
+    NSBundle *b = [NSBundle bundleWithPath:appPath];
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[appPath stringByAppendingPathComponent:@"Info.plist"]];
+    NSMutableArray *names = [NSMutableArray new];
+    for (NSString *k in @[@"CFBundleIcons", @"CFBundleIcons~tv"]) {
+        NSDictionary *pi = info[k][@"CFBundlePrimaryIcon"];
+        if ([pi isKindOfClass:NSDictionary.class]) {
+            if (pi[@"CFBundleIconName"]) [names addObject:pi[@"CFBundleIconName"]];
+            for (NSString *f in pi[@"CFBundleIconFiles"]) [names addObject:f];
+        } else if ([pi isKindOfClass:NSString.class]) [names addObject:pi];
+    }
+    if (info[@"CFBundleIconFile"]) [names addObject:info[@"CFBundleIconFile"]];
+    [names addObjectsFromArray:@[@"App Icon", @"App Icon - App Store", @"App Icon - Large", @"App Icon - Small", @"AppIcon", @"Top Shelf Image", @"Top Shelf Image Wide"]];
+    if (b) for (NSString *n in names) {
+        UIImage *img = nil;
+        @try { img = [UIImage imageNamed:n inBundle:b compatibleWithTraitCollection:nil]; } @catch (NSException *e) {}
+        if (img.size.width > 8) { LCTVLog(@"icon: '%@' from Assets.car %.0fx%.0f", n, img.size.width, img.size.height); return img; }
+    }
+    // loose PNGs
+    UIImage *best = nil;
+    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:appPath error:nil]) {
+        if (![f.pathExtension.lowercaseString isEqual:@"png"] || [f.lowercaseString rangeOfString:@"icon"].location == NSNotFound) continue;
+        UIImage *img = [UIImage imageWithContentsOfFile:[appPath stringByAppendingPathComponent:f]];
+        if (img.size.width * img.scale > best.size.width * best.scale) best = img;
+    }
+    if (best) LCTVLog(@"icon: loose PNG %.0fx%.0f", best.size.width, best.size.height);
+    return best;
+}
+
+- (UIImage *)iconForApp:(LCTVImportedApp *)app {
+    NSCache *mem = gIconMem;
+    UIImage *c = [mem objectForKey:app.bundleId];
+    if (c) return c;
+    NSString *p = [self iconCachePath:app.bundleId];
+    UIImage *img = [UIImage imageWithContentsOfFile:p];
+    if (!img) {
+        CGSize sz = CGSizeMake(400, 240);
+        UIImage *src = app.appPath.length ? [self extractIconFromBundle:app.appPath] : nil;
+        img = src ? fitTile(src, sz) : [LCTVAppManager letterTileFor:app.name ?: app.bundleId size:sz];
+        if (src || !app.purged) [UIImagePNGRepresentation(img) writeToFile:p atomically:YES];
+    }
+    [mem setObject:img forKey:app.bundleId];
+    return img;
 }
 
 @end

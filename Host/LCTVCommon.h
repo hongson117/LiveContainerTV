@@ -8,6 +8,9 @@ NSString *LCTVAppsDir(void);
 NSString *LCTVLogPath(void);
 NSString *LCTVPendingPath(void);
 NSString *LCTVCertPath(void);
+NSString *LCTVDataDir(void);
+NSString *LCTVIconsDir(void);
+extern NSString *const LCTVStateChangedNotification;
 NSString *LCTVCertPassPath(void);
 NSString *LCTVReadLogTail(NSUInteger maxLen);
 NS_ASSUME_NONNULL_END
