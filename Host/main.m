@@ -117,7 +117,39 @@ static UIImage *lc_imageNamed(id self, SEL _cmd, NSString *name, NSBundle *bundl
         assetLog([NSString stringWithFormat:@"imageNamed '%@' bundle=%@ nil -> %@", name, bundle.bundlePath.lastPathComponent ?: @"(nil)", i ? @"ok via guest" : @"still nil"]); }
     return i;
 }
+static IMP gOrigSB;
+static UIStoryboard *lc_storyboard(id self, SEL _cmd, NSString *name, NSBundle *bundle) {
+    NSBundle *g = lc_mainBundle(nil, NULL);
+    @try {
+        UIStoryboard *sb = ((UIStoryboard *(*)(id, SEL, id, id))gOrigSB)(self, _cmd, name, bundle);
+        if (sb) return sb;
+    } @catch (NSException *e) { assetLog([NSString stringWithFormat:@"storyboard '%@' bundle=%@ threw: %@", name, bundle.bundlePath.lastPathComponent ?: @"(nil)", e.reason]); }
+    NSBundle *fresh = [[NSBundle alloc] initWithPath:gGuestBundlePath];
+    for (NSBundle *b in @[g, fresh ?: g]) {
+        @try { UIStoryboard *sb = ((UIStoryboard *(*)(id, SEL, id, id))gOrigSB)(self, _cmd, name, b);
+            if (sb) { assetLog([NSString stringWithFormat:@"storyboard '%@' ok via %@guest bundle", name, b == g ? @"" : @"fresh "]); return sb; } }
+        @catch (NSException *e) { assetLog([NSString stringWithFormat:@"storyboard '%@' retry failed: %@", name, e.reason]); }
+    }
+    return ((UIStoryboard *(*)(id, SEL, id, id))gOrigSB)(self, _cmd, name, bundle); // rethrow original behaviour
+}
+static void probeGuestResources(void) {
+    NSBundle *g = lc_mainBundle(nil, NULL);
+    NSString *sb = [g pathForResource:@"Login" ofType:@"storyboardc"];
+    NSURL *car = [g URLForResource:@"Assets" withExtension:@"car"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *direct = [gGuestBundlePath stringByAppendingPathComponent:@"Assets.car"];
+    UIColor *c = gOrigColorNamed ? ((UIColor *(*)(id, SEL, id, id, id))gOrigColorNamed)(UIColor.class, @selector(colorNamed:inBundle:compatibleWithTraitCollection:), @"primaryFontColor", g, nil) : nil;
+    NSBundle *fresh = [[NSBundle alloc] initWithPath:gGuestBundlePath];
+    NSString *sb2 = [fresh pathForResource:@"Login" ofType:@"storyboardc"];
+    NSString *m = [NSString stringWithFormat:@"[probe] guestBundle=%@ id=%@ loaded=%d\n[probe] pathForResource Login.storyboardc=%@ (fresh bundle: %@)\n[probe] URLForResource Assets.car=%@\n[probe] readable storyboardc=%d Assets.car=%d (exists=%d)\n[probe] colorNamed primaryFontColor in guest=%@\n[probe] resourcePath=%@ mainBundle=%@\n",
+        g.bundlePath, g.bundleIdentifier, g.isLoaded, sb ?: @"NIL", sb2 ?: @"NIL", car.path ?: @"NIL",
+        [fm isReadableFileAtPath:[gGuestBundlePath stringByAppendingPathComponent:@"Login.storyboardc/Info.plist"]], [fm isReadableFileAtPath:direct], [fm fileExistsAtPath:direct],
+        c ? @"OK" : @"NIL", g.resourcePath, NSBundle.mainBundle.bundlePath];
+    wr(m.UTF8String); LCTVLog(@"%@", m);
+}
 static void installBundleForClassHook(NSString *execPath) {
+    Method sm = class_getClassMethod(UIStoryboard.class, @selector(storyboardWithName:bundle:));
+    if (sm) gOrigSB = method_setImplementation(sm, (IMP)lc_storyboard);
     Method cm = class_getClassMethod(UIColor.class, @selector(colorNamed:inBundle:compatibleWithTraitCollection:));
     if (cm) gOrigColorNamed = method_setImplementation(cm, (IMP)lc_colorNamed);
     Method im = class_getClassMethod(UIImage.class, @selector(imageNamed:inBundle:compatibleWithTraitCollection:));
@@ -239,7 +271,9 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
         installInfoOverride(hostBundle);
         installBundleForClassHook(execPath);
-        redirectMainCFBundle(fwOrAppPath);
+        if ([NSUserDefaults.standardUserDefaults boolForKey:@"LCTVCFBundleRedirect"]) redirectMainCFBundle(fwOrAppPath);
+        else LCTVLog(@"cfbundle: redirect disabled (LCTVCFBundleRedirect=NO)");
+        probeGuestResources();
         registerGuestFonts(fwOrAppPath, gGuestInfo);
         preloadFrameworks(fwOrAppPath);
         T(@"preload frameworks");
