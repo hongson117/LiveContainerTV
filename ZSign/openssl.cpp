@@ -8,6 +8,14 @@
 #include <openssl/pkcs12.h>
 #include <openssl/conf.h>
 
+static void LCTVEnsureOSSLProviders(void) {
+    static int once = 0;
+    if (once) return;
+    once = 1;
+    OSSL_PROVIDER_load(NULL, "default");
+    OSSL_PROVIDER_load(NULL, "legacy");
+}
+
 const char* ZSignAsset::s_szAppleDevCACert = ""
 "-----BEGIN CERTIFICATE-----\n"
 "MIIEIjCCAwqgAwIBAgIIAd68xDltoBAwDQYJKoZIhvcNAQEFBQAwYjELMAkGA1UE\n"
@@ -650,7 +658,7 @@ bool ZSignAsset::Init(
 			evpPKey = d2i_PrivateKey_bio(bioPKey, NULL);
 			if (NULL == evpPKey) {
 				BIO_reset(bioPKey);
-				OSSL_PROVIDER_load(NULL, "legacy");
+				LCTVEnsureOSSLProviders();
 				PKCS12* p12 = d2i_PKCS12_bio(bioPKey, NULL);
 				if (NULL != p12) {
 					if (0 == PKCS12_parse(p12, strPassword.c_str(), &evpPKey, &x509Cert, NULL)) {
@@ -797,7 +805,7 @@ bool ZSignAsset::InitSimple(const void* strSignerPKeyData, int strSignerPKeyData
             if (NULL == evpPKey)
             {
                 BIO_reset(bioPKey);
-                OSSL_PROVIDER_load(NULL, "legacy");
+                LCTVEnsureOSSLProviders();
                 PKCS12 *p12 = d2i_PKCS12_bio(bioPKey, NULL);
                 if (NULL != p12)
                 {
@@ -818,7 +826,7 @@ bool ZSignAsset::InitSimple(const void* strSignerPKeyData, int strSignerPKeyData
                 if (NULL == evpPKey)
                 {
                     BIO_reset(bioPKey);
-                    OSSL_PROVIDER_load(NULL, "legacy");
+                    LCTVEnsureOSSLProviders();
                     PKCS12 *p12 = d2i_PKCS12_bio(bioPKey, NULL);
                     if (NULL != p12)
                     {

@@ -10,7 +10,10 @@
 #import "LCTVAppManager.h"
 
 static NSString *gGuestBundlePath;
-static NSMutableString *gDiag;
+
+static NSString *LCTVForceHostPath(void) {
+    return [LCTVCachesDir() stringByAppendingPathComponent:@"lctv_force_host"];
+}
 
 static NSBundle *lc_mainBundle(id self, SEL _cmd) {
     static NSBundle *b;
@@ -64,8 +67,71 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
     }
 }
 
+/// Clear any pending guest selection immediately (file + UserDefaults). Call before deciding to launch.
+static void clearPending(void) {
+    [[NSFileManager defaultManager] removeItemAtPath:LCTVPendingPath() error:nil];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LCTVSelectedGuest"];
+    [NSUserDefaults.standardUserDefaults synchronize];
+}
+
+/// Read pending token. Clears the flag as soon as it is read. Only returns a token if it was
+/// written very recently (explicit just-selected relaunch). Stale / crash-relaunch → nil (host list).
+static NSString *consumePendingIfFresh(void) {
+    NSString *path = LCTVPendingPath();
+    NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL forceHost = [fm fileExistsAtPath:LCTVForceHostPath()];
+    if (forceHost) {
+        LCTVLog(@"boot: lctv_force_host present — skipping guest, going to host list");
+        [fm removeItemAtPath:LCTVForceHostPath() error:nil];
+        clearPending();
+        return nil;
+    }
+
+    NSString *raw = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    NSString *fromUD = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVSelectedGuest"];
+    NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
+    NSDate *mtime = attrs[NSFileModificationDate];
+    NSTimeInterval age = mtime ? -[mtime timeIntervalSinceNow] : 1e9;
+
+    // Parse "token\nunix_ts" or legacy bare token
+    NSString *token = nil;
+    NSTimeInterval writtenAge = age;
+    if (raw.length) {
+        NSArray *lines = [[raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                          componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+        lines = [lines filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+        if (lines.count >= 1) token = lines[0];
+        if (lines.count >= 2) {
+            double ts = [lines[1] doubleValue];
+            if (ts > 1000000000) writtenAge = [[NSDate date] timeIntervalSince1970] - ts;
+        }
+    }
+    if (!token.length && fromUD.length) {
+        token = fromUD;
+        // UD-only with no fresh file → treat as stale (crash left UD behind)
+        writtenAge = 1e9;
+    }
+
+    LCTVLog(@"boot pending token='%@' age=%.1fs fileAge=%.1fs UD='%@' forceHost=%d",
+            token ?: @"(nil)", writtenAge, age, fromUD ?: @"(nil)", forceHost);
+
+    // ALWAYS clear before any launch decision — never leave a sticky flag for crash-relaunch
+    clearPending();
+
+    if (!token.length) return nil;
+
+    // Only auto-launch if pending was written in the last 90 seconds (user just tapped Launch → OK)
+    const NSTimeInterval kMaxFresh = 90.0;
+    if (writtenAge > kMaxFresh) {
+        LCTVLog(@"boot: stale pending (%.1fs > %.0fs) — host list (crash-relaunch safe)", writtenAge, kMaxFresh);
+        return nil;
+    }
+    LCTVLog(@"boot: fresh pending — will launch %@", token);
+    return token;
+}
+
 @interface LCTVListController : UITableViewController
-@property NSArray *builtinGuests; // NSString names of Frameworks/*.framework guests
+@property NSArray *builtinGuests;
 @property NSArray<LCTVImportedApp *> *imported;
 @property NSString *diagText;
 @property NSString *serverURL;
@@ -79,6 +145,8 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 80;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Reload" style:UIBarButtonItemStylePlain target:self action:@selector(reload)];
+    // Ensure no leftover pending while sitting on host UI
+    clearPending();
     [self reload];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reload) name:UIApplicationDidBecomeActiveNotification object:nil];
 }
@@ -117,8 +185,11 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
     c.selectionStyle = UITableViewCellSelectionStyleDefault;
     if (ip.section == 0) {
         BOOL cert = LCTVAppManager.shared.hasCertificate;
-        c.textLabel.text = [NSString stringWithFormat:@"Open on your PC/phone:\n%@\n\nCertificate: %@\n1) Upload .p12 from plumesign\n2) Upload tvOS .ipa\n3) Come back here and Launch",
-                            self.serverURL ?: @"starting…", cert ? @"loaded" : @"MISSING"];
+        c.textLabel.text = [NSString stringWithFormat:
+            @"Open on your PC/phone:\n%@\n\nCertificate: %@\n"
+            @"Export: plumesign certificate export -u … -p PASS -o cert.p12\n"
+            @"1) Upload .p12 (password REQUIRED)\n2) Upload tvOS .ipa\n3) Reload → Launch → reopen",
+            self.serverURL ?: @"starting…", cert ? @"loaded" : @"MISSING"];
         c.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if (ip.section == 1) {
         c.textLabel.text = self.builtinGuests.count ? self.builtinGuests[ip.row] : @"(none)";
@@ -162,15 +233,25 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
     }
 }
 - (void)scheduleLaunch:(NSString *)token title:(NSString *)title {
-    NSError *err = nil;
-    BOOL ok = [token writeToFile:LCTVPendingPath() atomically:YES encoding:NSUTF8StringEncoding error:&err];
-    LCTVLog(@"wrote pending=%@ ok=%d err=%@", token, ok, err);
-    [NSUserDefaults.standardUserDefaults setObject:token forKey:@"LCTVSelectedGuest"];
-    [NSUserDefaults.standardUserDefaults synchronize];
-    NSString *msg = [NSString stringWithFormat:@"Live Container will close. Open it again to start %@.\n\npending ok=%d", title, ok];
+    // Do NOT write pending until the user confirms OK — otherwise a crash leaves a sticky GuestDemo flag.
+    NSString *msg = [NSString stringWithFormat:
+                     @"LiveContainerTV will close. Open it again within 90 seconds to start %@.\n\n"
+                     @"From a guest: Menu or “Return to host”. Crash / later relaunch opens the host list.",
+                     title];
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Launch" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-        fflush(NULL); usleep(200000); exit(0);
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK — close & relaunch" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        NSString *payload = [NSString stringWithFormat:@"%@\n%.0f", token, [[NSDate date] timeIntervalSince1970]];
+        NSError *err = nil;
+        BOOL ok = [payload writeToFile:LCTVPendingPath() atomically:YES encoding:NSUTF8StringEncoding error:&err];
+        // Also clear force-host so this intentional launch wins
+        [[NSFileManager defaultManager] removeItemAtPath:LCTVForceHostPath() error:nil];
+        [NSUserDefaults.standardUserDefaults setObject:token forKey:@"LCTVSelectedGuest"];
+        [NSUserDefaults.standardUserDefaults synchronize];
+        LCTVLog(@"wrote pending=%@ ok=%d err=%@", payload, ok, err);
+        fflush(NULL);
+        usleep(200000);
+        exit(0);
     }]];
     [self presentViewController:a animated:YES completion:nil];
 }
@@ -183,6 +264,7 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o {
     NSError *err = nil;
     if (![LCTVHTTPServer.shared start:&err]) LCTVLog(@"HTTP start failed: %@", err);
+    clearPending(); // belt-and-suspenders while host UI is up
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[LCTVListController new]];
     [self.window makeKeyAndVisible];
@@ -200,23 +282,12 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
 }
 @end
 
-static NSString *readPending(void) {
-    NSString *fromFile = [[NSString stringWithContentsOfFile:LCTVPendingPath() encoding:NSUTF8StringEncoding error:nil]
-                          stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSString *fromUD = [NSUserDefaults.standardUserDefaults stringForKey:@"LCTVSelectedGuest"];
-    LCTVLog(@"boot pending file='%@' exists=%d UD='%@'", fromFile ?: @"(nil)",
-            [[NSFileManager defaultManager] fileExistsAtPath:LCTVPendingPath()], fromUD ?: @"(nil)");
-    return fromFile.length ? fromFile : fromUD;
-}
-
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         LCTVLog(@"==== boot pid=%d %@", getpid(), NSBundle.mainBundle.bundleIdentifier);
-        NSString *sel = readPending();
+        NSString *sel = consumePendingIfFresh();
         if (sel.length) {
-            [[NSFileManager defaultManager] removeItemAtPath:LCTVPendingPath() error:nil];
-            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"LCTVSelectedGuest"];
-            [NSUserDefaults.standardUserDefaults synchronize];
+            // Flag already cleared inside consumePendingIfFresh
             int r = -1;
             if ([sel hasPrefix:@"builtin:"]) {
                 NSString *name = [sel substringFromIndex:8];
@@ -228,13 +299,12 @@ int main(int argc, char *argv[]) {
                 for (LCTVImportedApp *a in LCTVAppManager.shared.importedApps) if ([a.bundleId isEqual:bid]) { app = a; break; }
                 if (!app) LCTVLog(@"ABORT imported app not found %@", bid);
                 else {
-                    // Re-prepare (re-sign) in case cert was uploaded after import
                     NSString *prep = [LCTVAppManager.shared prepareAppForLaunch:app];
                     if (prep) LCTVLog(@"prepare: %@", prep);
                     r = launchGuestAtPath(app.appPath, app.execPath, app.name, argc, argv);
                 }
             } else {
-                // legacy GuestDemo name
+                // legacy bare name
                 NSString *fw = [NSString stringWithFormat:@"%@/Frameworks/%@.framework", NSBundle.mainBundle.bundlePath, sel];
                 r = launchGuestAtPath(fw, [fw stringByAppendingPathComponent:sel], sel, argc, argv);
             }
