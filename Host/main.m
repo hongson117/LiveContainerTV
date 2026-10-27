@@ -15,6 +15,7 @@ static NSString *gGuestBundlePath;
 #import <execinfo.h>
 #import <signal.h>
 #import <fcntl.h>
+#import <CoreText/CoreText.h>
 #import <mach-o/fat.h>
 #import <dlfcn.h>
 
@@ -83,6 +84,38 @@ static void installInfoOverride(NSBundle *host) {
     gGuestInfo = [NSDictionary dictionaryWithContentsOfFile:[gGuestBundlePath stringByAppendingPathComponent:@"Info.plist"]];
     gOrigInfo = method_setImplementation(class_getInstanceMethod(NSBundle.class, @selector(infoDictionary)), (IMP)lc_info);
     gOrigObjForKey = method_setImplementation(class_getInstanceMethod(NSBundle.class, @selector(objectForInfoDictionaryKey:)), (IMP)lc_objForKey);
+}
+
+#pragma mark - CFBundle main-bundle redirect + fonts
+/// UIKit/CoreUI/CoreText call CFBundleGetMainBundle() inside the shared cache (no GOT -> not hookable by symbol rebinding).
+/// LiveContainer-style: patch the host main CFBundle's internal pointer fields (bundle URL, info dict, resources URL,
+/// executable URL...) to the guest CFBundle's equivalents, matched by pointer identity. Only replaces slots that exactly
+/// equal a known host object, so unknown layout is left untouched.
+static void redirectMainCFBundle(NSString *guestPath) {
+    CFBundleRef host = CFBundleGetMainBundle();
+    CFBundleRef guest = CFBundleCreate(NULL, (__bridge CFURLRef)[NSURL fileURLWithPath:guestPath isDirectory:YES]);
+    if (!host || !guest) { LCTVLog(@"cfbundle: create failed"); return; }
+    CFBundleGetInfoDictionary(guest); CFBundleGetInfoDictionary(host);
+    CFURLRef hu[4] = { CFBundleCopyBundleURL(host), CFBundleCopyResourcesDirectoryURL(host), CFBundleCopyExecutableURL(host), CFBundleCopySupportFilesDirectoryURL(host) };
+    CFURLRef gu[4] = { CFBundleCopyBundleURL(guest), CFBundleCopyResourcesDirectoryURL(guest), CFBundleCopyExecutableURL(guest), CFBundleCopySupportFilesDirectoryURL(guest) };
+    const void *hp[5] = { hu[0], hu[1], hu[2], hu[3], CFBundleGetInfoDictionary(host) };
+    const void *gp[5] = { gu[0], gu[1], gu[2], gu[3], CFBundleGetInfoDictionary(guest) };
+    void **slots = (void **)host; int patched = 0;
+    for (int i = 2; i < 48; i++) for (int k = 0; k < 5; k++)
+        if (hp[k] && gp[k] && slots[i] == hp[k]) { CFRetain(gp[k]); slots[i] = (void *)gp[k]; patched++; break; }
+    LCTVLog(@"cfbundle: patched %d main-bundle fields -> %@ (now reports %@)", patched, guestPath.lastPathComponent,
+            CFBridgingRelease(CFBundleCopyBundleURL(CFBundleGetMainBundle())));
+    // keep guest alive forever (its objects are now shared)
+}
+static void registerGuestFonts(NSString *guestPath, NSDictionary *info) {
+    NSArray *fonts = info[@"UIAppFonts"]; int ok = 0;
+    for (NSString *f in fonts) {
+        NSURL *u = [NSURL fileURLWithPath:[guestPath stringByAppendingPathComponent:f]];
+        CFErrorRef e = NULL;
+        if (CTFontManagerRegisterFontsForURL((__bridge CFURLRef)u, kCTFontManagerScopeProcess, &e)) ok++;
+        else { LCTVLog(@"font register failed %@: %@", f, e ? CFBridgingRelease(e) : nil); }
+    }
+    if (fonts.count) LCTVLog(@"fonts: registered %d/%lu UIAppFonts", ok, (unsigned long)fonts.count);
 }
 
 #pragma mark - Guest preflight
@@ -164,6 +197,8 @@ static int launchGuestAtPath(NSString *fwOrAppPath, NSString *execPath, NSString
         NSBundle *hostBundle = NSBundle.mainBundle;
         method_setImplementation(class_getClassMethod(NSBundle.class, @selector(mainBundle)), (IMP)lc_mainBundle);
         installInfoOverride(hostBundle);
+        redirectMainCFBundle(fwOrAppPath);
+        registerGuestFonts(fwOrAppPath, gGuestInfo);
         preloadFrameworks(fwOrAppPath);
         T(@"preload frameworks");
         dlerror();
